@@ -1,0 +1,390 @@
+/**
+ * DocuCut render/pipeline worker. Runs where FFmpeg can run for minutes at a time
+ * (your machine or a VPS) — not on Vercel serverless functions.
+ *
+ *   npm run worker
+ *
+ * Requires NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY (server-only).
+ */
+import { existsSync } from "node:fs";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { makeClaude, makeDirector, parseSettings, resolveStyle } from "@/lib/data/project";
+import { type LoadedEdit, loadEdit, saveGeneration, SupabaseSearchCache } from "@/lib/data/store";
+import { DEMO_SCRIPT } from "@/lib/demo/script";
+import { type OutputFormat, type ProjectSettings, Transcript, type AssetRef } from "@/lib/domain/types";
+import { stableHash } from "@/lib/media/cache";
+import { LocalLibraryMusicProvider } from "@/lib/media/music";
+import { looksAiGenerated } from "@/lib/media/rights";
+import { generateEdit, type SceneSelection } from "@/lib/pipeline/generate";
+import { buildTimeline } from "@/lib/pipeline/timelineBuilder";
+import { alignScriptToAudio } from "@/lib/pipeline/transcript";
+import { analyzeReferenceVideo } from "@/lib/reference/analyze";
+import { detectSilences, probe, runFfmpeg } from "@/lib/render/ffmpeg";
+import { library, libraryReady } from "@/lib/render/library";
+import { renderTimeline } from "@/lib/render/render";
+import { resolveCredentials } from "@/lib/settings/apiKeys";
+import { BUCKET, createAdminClient } from "@/lib/supabase/admin";
+import { transcribeWithWhisper } from "@/lib/transcription/whisper";
+
+const WORKER_ID = `${os.hostname()}-${process.pid}`;
+const ROOT = path.join(process.cwd(), ".cache");
+const STORAGE_CACHE = path.join(ROOT, "storage");
+const TEMP_RETENTION_HOURS = Number(process.env.TEMP_RETENTION_HOURS ?? 24);
+const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 3000);
+const MAX_NARRATION_SECONDS = 60 * 60;
+
+const db = createAdminClient();
+const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
+
+// ---------------------------------------------------------------------------
+// Storage helpers
+// ---------------------------------------------------------------------------
+
+async function downloadObject(objectPath: string): Promise<string> {
+  await mkdir(STORAGE_CACHE, { recursive: true });
+  const ext = (objectPath.split(".").pop() ?? "bin").replace(/[^a-z0-9]/gi, "").slice(0, 5);
+  const local = path.join(STORAGE_CACHE, `${stableHash(objectPath).slice(0, 32)}.${ext}`);
+  if (existsSync(local)) return local;
+  const { data, error } = await db.storage.from(BUCKET).download(objectPath);
+  if (error || !data) throw new Error(`Could not download ${objectPath} from storage: ${error?.message ?? "no data"}`);
+  await writeFile(local, Buffer.from(await data.arrayBuffer()));
+  return local;
+}
+
+async function uploadFile(local: string, objectPath: string, contentType: string) {
+  const body = await readFile(local);
+  const { error } = await db.storage.from(BUCKET).upload(objectPath, body, { contentType, upsert: true });
+  if (error) throw new Error(error.message);
+}
+
+function throttle<T extends unknown[]>(fn: (...a: T) => Promise<void>, ms: number) {
+  let last = 0;
+  return async (...a: T) => {
+    const now = Date.now();
+    if (now - last < ms) return;
+    last = now;
+    await fn(...a).catch(() => undefined);
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Narration + transcript
+// ---------------------------------------------------------------------------
+
+interface ProjectRow {
+  id: string;
+  user_id: string;
+  name: string;
+  is_demo: boolean;
+  settings: unknown;
+  style_profile_id: string | null;
+  narration_path: string | null;
+  script: string | null;
+  transcript: unknown;
+  reference_video_path: string | null;
+  music_path: string | null;
+  timeline_version: number;
+}
+
+async function loadProject(id: string): Promise<ProjectRow> {
+  const { data, error } = await db.from("projects").select("*").eq("id", id).single();
+  if (error || !data) throw new Error(`Project ${id} not found`);
+  return data as ProjectRow;
+}
+
+/** Local, validated narration audio (48 kHz mono WAV). */
+async function narrationAudio(p: ProjectRow): Promise<{ path: string; duration: number }> {
+  if (p.is_demo && !p.narration_path) {
+    if (!existsSync(library.demoNarration)) throw new Error("Demo narration missing: run `npm run assets:generate` on the worker machine.");
+    const info = await probe(library.demoNarration);
+    return { path: library.demoNarration, duration: info.duration ?? 0 };
+  }
+  if (!p.narration_path) throw new Error("Upload a narration (audio or video) first.");
+  const src = await downloadObject(p.narration_path);
+  const info = await probe(src).catch(() => null);
+  if (!info?.hasAudio) throw new Error("The narration file has no decodable audio stream.");
+  if (!info.duration || info.duration < 2) throw new Error("The narration is too short.");
+  if (info.duration > MAX_NARRATION_SECONDS) throw new Error("The narration is longer than 60 minutes.");
+  const wav = `${src}.voice.wav`;
+  if (!existsSync(wav)) await runFfmpeg(["-i", src, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", wav]);
+  return { path: wav, duration: info.duration };
+}
+
+async function ensureTranscript(p: ProjectRow, audio: { path: string; duration: number }, creds: { openai?: string }): Promise<Transcript> {
+  const existing = Transcript.safeParse(p.transcript);
+  if (existing.success && Math.abs(existing.data.duration - audio.duration) < 0.5) return existing.data;
+
+  const script = p.is_demo && !p.script ? DEMO_SCRIPT : p.script;
+  let transcript: Transcript;
+  if (script?.trim()) {
+    transcript = alignScriptToAudio(script, audio.duration, await detectSilences(audio.path));
+  } else if (creds.openai) {
+    const mp3 = `${audio.path}.stt.mp3`;
+    if (!existsSync(mp3)) await runFfmpeg(["-i", audio.path, "-ac", "1", "-ar", "16000", "-b:a", "48k", mp3]);
+    transcript = await transcribeWithWhisper(mp3, creds.openai, audio.duration);
+  } else {
+    throw new Error("No transcript: add the script to the project, or configure OPENAI_API_KEY for automatic transcription.");
+  }
+  await db.from("projects").update({ transcript, narration_duration: audio.duration }).eq("id", p.id);
+  return transcript;
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline jobs
+// ---------------------------------------------------------------------------
+
+interface JobRow {
+  id: string;
+  project_id: string;
+  user_id: string;
+  kind?: "generate" | "regenerate_scenes" | "analyze_reference";
+  payload?: Record<string, unknown>;
+  format?: OutputFormat;
+}
+
+async function runPipelineJob(job: JobRow) {
+  const update = (fields: Record<string, unknown>) =>
+    db.from("pipeline_jobs").update({ ...fields, heartbeat_at: new Date().toISOString() }).eq("id", job.id);
+  const progress = throttle(async (stage: string, p: number) => {
+    await update({ current_stage: stage, progress: Math.min(1, Math.max(0, p)) });
+  }, 1000);
+
+  const project = await loadProject(job.project_id);
+  const settings = parseSettings(project.settings);
+  const creds = await resolveCredentials(project.user_id);
+  const { claude, usage } = makeClaude(creds, settings, db, { userId: project.user_id, projectId: project.id });
+
+  if (job.kind === "analyze_reference") {
+    if (!project.reference_video_path) throw new Error("Upload a reference video first.");
+    await progress("Analysing reference video", 0.1);
+    const file = await downloadObject(project.reference_video_path);
+    const analysis = await analyzeReferenceVideo(file, { workDir: path.join(ROOT, "reference", job.id), claude: claude ?? undefined });
+    const { data: profile, error } = await db
+      .from("style_profiles")
+      .insert({ user_id: project.user_id, name: `Reference: ${project.name}`.slice(0, 120), source: "reference", profile: analysis.profile, metrics: { ...analysis.metrics, measured: analysis.measured, estimated: analysis.estimated, method: analysis.method, notes: analysis.notes } })
+      .select("id")
+      .single();
+    if (error) throw new Error(error.message);
+    if (job.payload?.apply !== false) await db.from("projects").update({ style_profile_id: profile.id }).eq("id", project.id);
+    await rm(path.join(ROOT, "reference", job.id), { recursive: true, force: true });
+    return { styleProfileId: profile.id, ...analysis };
+  }
+
+  await db.from("projects").update({ status: "processing", last_error: null }).eq("id", project.id);
+  await progress("Preparing narration", 0.02);
+  const audio = await narrationAudio(project);
+  const transcript = await ensureTranscript(project, audio, creds);
+  const style = await resolveStyle(db, project.style_profile_id, settings);
+  const director = makeDirector(claude, settings);
+  const orientation = "landscape" as const;
+
+  let onlySceneIds: Set<string> | undefined;
+  let existing: LoadedEdit | undefined;
+  if (job.kind === "regenerate_scenes") {
+    const ids = Array.isArray(job.payload?.sceneIds) ? (job.payload!.sceneIds as unknown[]).filter((x): x is string => typeof x === "string") : [];
+    if (!ids.length) throw new Error("No scenes selected to regenerate.");
+    existing = await loadEdit(db, project.id);
+    onlySceneIds = new Set(ids);
+  }
+
+  const result = await generateEdit(
+    { projectTitle: project.name, transcript, settings, style, orientation, onlySceneIds, existing },
+    { director, creds, searchCache: new SupabaseSearchCache(db), onProgress: (s, p) => progress(s, p), log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`) },
+  );
+  await progress("Saving timeline", 0.97);
+  await saveGeneration(db, { userId: project.user_id, projectId: project.id }, result, onlySceneIds);
+  await db.from("projects").update({ status: "ready", timeline_version: project.timeline_version + 1 }).eq("id", project.id);
+
+  const errorSummary: Record<string, number> = {};
+  for (const e of result.searchErrors) errorSummary[`${e.provider}:${e.code}`] = (errorSummary[`${e.provider}:${e.code}`] ?? 0) + 1;
+  return {
+    director: director.label,
+    scenes: result.plans.length,
+    clips: result.selections.length,
+    warnings: result.warnings.slice(0, 50),
+    searchErrors: errorSummary,
+    ai: usage.totals,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Render jobs
+// ---------------------------------------------------------------------------
+
+/** Rights gate: nothing UNKNOWN/RESTRICTED reaches the renderer without explicit approval. */
+function renderableSelections(selections: LoadedEdit["selections"], settings: ProjectSettings, warn: (m: string) => void): SceneSelection[] {
+  return selections.filter((s) => {
+    if (looksAiGenerated(s.asset)) {
+      warn(`${s.clipId}: AI-generated asset removed from render (${s.asset.title}).`);
+      return false;
+    }
+    const st = s.asset.rightsStatus;
+    if (st === "RESTRICTED") {
+      warn(`${s.clipId}: restricted asset removed from render (${s.asset.title}).`);
+      return false;
+    }
+    if (st === "UNKNOWN" && !(s.userApproved && settings.allowApprovedUnknown)) {
+      warn(`${s.clipId}: unknown-rights asset skipped (approve it and enable "Allow approved unknown-rights assets").`);
+      return false;
+    }
+    if (st === "USER_REVIEW" && !(settings.allowReviewAssets || s.userApproved)) {
+      warn(`${s.clipId}: review-required asset skipped.`);
+      return false;
+    }
+    return true;
+  });
+}
+
+async function runRenderJob(job: JobRow) {
+  const warnings: string[] = [];
+  const update = (fields: Record<string, unknown>) =>
+    db.from("render_jobs").update({ ...fields, heartbeat_at: new Date().toISOString() }).eq("id", job.id);
+  const stageUpdate = throttle(async (status: string, p: number, message: string) => {
+    await update({ status, progress: Math.min(1, p), current_stage: message });
+  }, 800);
+
+  const project = await loadProject(job.project_id);
+  const settings = parseSettings(project.settings);
+  const edit = await loadEdit(db, project.id);
+  if (!edit.selections.length) throw new Error("Nothing to render — generate the edit first.");
+  const audio = await narrationAudio(project);
+  const transcript = await ensureTranscript(project, audio, await resolveCredentials(project.user_id));
+  const selections = renderableSelections(edit.selections, settings, (m) => warnings.push(m));
+  if (!selections.length) throw new Error("Every visual was removed by the rights gate. Review assets in the Rights panel.");
+
+  let music: string | null = null;
+  if (settings.musicTrack === "uploaded" && project.music_path) music = await downloadObject(project.music_path);
+  else if (settings.musicTrack !== "none") music = await new LocalLibraryMusicProvider().resolve(settings.musicTrack);
+
+  const format = job.format ?? "landscape";
+  const timeline = buildTimeline({ plans: edit.plans, selections, transcript, settings, format, voicePath: audio.path, musicPath: music });
+  const outPath = path.join(ROOT, "renders", `${job.id}.mp4`);
+  const result = await renderTimeline(timeline, {
+    workDir: path.join(ROOT, "render", job.id),
+    outPath,
+    draft: format === "draft",
+    resolveLocal: async (ref: AssetRef) => {
+      if (!ref.assetId.startsWith("uploaded:")) return null;
+      return downloadObject(ref.assetId.slice("uploaded:".length));
+    },
+    onStage: (s, p, m) => stageUpdate(s, p, m),
+    log: (m) => log(`[render ${job.id.slice(0, 8)}] ${m}`),
+  });
+  warnings.push(...result.warnings);
+
+  const size = (await stat(outPath)).size;
+  const objectPath = `${project.id}/renders/${job.id}.mp4`;
+  let storagePath: string | null = objectPath;
+  try {
+    await uploadFile(outPath, objectPath, "video/mp4");
+  } catch (err) {
+    storagePath = null;
+    warnings.push(`Upload to Supabase Storage failed (${(err as Error).message}); ${Math.round(size / 1e6)} MB file kept on the worker at ${outPath}. Your Storage plan's upload limit may be too small for this render.`);
+  }
+  if (storagePath) {
+    await db.from("exports").insert({
+      project_id: project.id,
+      user_id: project.user_id,
+      render_job_id: job.id,
+      format,
+      storage_path: storagePath,
+      size_bytes: size,
+      duration: result.duration,
+      attributions: timeline.attributions,
+    });
+  }
+  await rm(path.join(ROOT, "render", job.id), { recursive: true, force: true });
+  return { output_path: storagePath ?? outPath, warnings };
+}
+
+// ---------------------------------------------------------------------------
+// Loop, recovery, cleanup
+// ---------------------------------------------------------------------------
+
+async function claim<T>(fn: "claim_pipeline_job" | "claim_render_job"): Promise<T | null> {
+  const { data, error } = await db.rpc(fn, { p_worker: WORKER_ID });
+  if (error) throw new Error(`${fn}: ${error.message}`);
+  return (Array.isArray(data) ? data[0] : data) ?? null;
+}
+
+async function recoverStaleJobs() {
+  const cutoff = new Date(Date.now() - 15 * 60_000).toISOString();
+  await db.from("pipeline_jobs").update({ status: "FAILED", error: "Worker stopped responding; please retry.", completed_at: new Date().toISOString() }).eq("status", "RUNNING").lt("heartbeat_at", cutoff);
+  await db.from("render_jobs").update({ status: "FAILED", error: "Worker stopped responding; please retry.", completed_at: new Date().toISOString() }).in("status", ["DOWNLOADING", "PREPARING", "RENDERING", "FINALIZING"]).lt("heartbeat_at", cutoff);
+}
+
+async function cleanup() {
+  const cutoff = Date.now() - TEMP_RETENTION_HOURS * 3600_000;
+  // Local caches.
+  for (const dir of ["render", "renders", "storage", "reference"]) {
+    const full = path.join(ROOT, dir);
+    for (const name of await readdir(full).catch(() => [] as string[])) {
+      const p = path.join(full, name);
+      const s = await stat(p).catch(() => null);
+      if (s && s.mtimeMs < cutoff) await rm(p, { recursive: true, force: true });
+    }
+  }
+  // Storage temp/ folders.
+  const { data: projects } = await db.from("projects").select("id").limit(1000);
+  for (const p of projects ?? []) {
+    const { data: files } = await db.storage.from(BUCKET).list(`${p.id}/temp`, { limit: 1000 });
+    const stale = (files ?? []).filter((f) => f.created_at && new Date(f.created_at).getTime() < cutoff).map((f) => `${p.id}/temp/${f.name}`);
+    if (stale.length) await db.storage.from(BUCKET).remove(stale);
+  }
+  // Old search cache rows.
+  await db.from("search_cache").delete().lt("created_at", new Date(Date.now() - 7 * 86400_000).toISOString());
+}
+
+async function main() {
+  if (!libraryReady()) throw new Error("Asset library missing — run `npm run assets:generate` first.");
+  log(`worker ${WORKER_ID} started (poll ${POLL_MS}ms, temp retention ${TEMP_RETENTION_HOURS}h)`);
+  let lastMaintenance = 0;
+  for (;;) {
+    try {
+      if (Date.now() - lastMaintenance > 10 * 60_000) {
+        lastMaintenance = Date.now();
+        await recoverStaleJobs();
+        await cleanup().catch((e) => log("cleanup failed:", (e as Error).message));
+      }
+      const pj = await claim<JobRow>("claim_pipeline_job");
+      if (pj) {
+        log(`pipeline job ${pj.id} (${pj.kind}) for project ${pj.project_id}`);
+        try {
+          const result = await runPipelineJob(pj);
+          await db.from("pipeline_jobs").update({ status: "COMPLETE", progress: 1, current_stage: "Done", result, completed_at: new Date().toISOString() }).eq("id", pj.id);
+          log(`pipeline job ${pj.id} complete`);
+        } catch (err) {
+          const msg = (err as Error).message;
+          log(`pipeline job ${pj.id} failed: ${msg}`);
+          await db.from("pipeline_jobs").update({ status: "FAILED", error: msg.slice(0, 2000), completed_at: new Date().toISOString() }).eq("id", pj.id);
+          if (pj.kind !== "analyze_reference") await db.from("projects").update({ status: "error", last_error: msg.slice(0, 2000) }).eq("id", pj.project_id);
+        }
+        continue;
+      }
+      const rj = await claim<JobRow>("claim_render_job");
+      if (rj) {
+        log(`render job ${rj.id} (${rj.format}) for project ${rj.project_id}`);
+        try {
+          const r = await runRenderJob(rj);
+          await db.from("render_jobs").update({ status: "COMPLETE", progress: 1, current_stage: "Complete", output_path: r.output_path, warnings: r.warnings.slice(0, 100), completed_at: new Date().toISOString() }).eq("id", rj.id);
+          log(`render job ${rj.id} complete`);
+        } catch (err) {
+          const msg = (err as Error).message;
+          log(`render job ${rj.id} failed: ${msg}`);
+          await db.from("render_jobs").update({ status: "FAILED", error: msg.slice(0, 2000), completed_at: new Date().toISOString() }).eq("id", rj.id);
+        }
+        continue;
+      }
+    } catch (err) {
+      log("worker loop error:", (err as Error).message);
+    }
+    await new Promise((r) => setTimeout(r, POLL_MS));
+  }
+}
+
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});

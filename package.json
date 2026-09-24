@@ -1,0 +1,52 @@
+{
+  "name": "video-editor",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "db:new": "supabase migration new",
+    "db:list": "supabase migration list --linked",
+    "db:diff": "supabase db diff --linked",
+    "db:push:dry": "supabase db push --linked --dry-run",
+    "db:push": "supabase db push --linked",
+    "db:types": "supabase gen types typescript --linked --schema public > src/lib/supabase/database.types.ts",
+    "worker": "tsx --env-file-if-exists=.env.local worker/index.ts",
+    "assets:generate": "tsx scripts/generate-library.ts",
+    "demo": "tsx --env-file-if-exists=.env.local scripts/demo.ts",
+    "test:providers": "tsx --env-file-if-exists=.env.local scripts/test-providers.ts",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "tsx --env-file-if-exists=.env.local scripts/e2e.ts"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.128.0",
+    "@supabase/ssr": "^0.12.7",
+    "@supabase/supabase-js": "^2.117.1",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "next": "16.3.6",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "server-only": "^0.0.1",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4",
+    "@types/ffprobe-static": "^2.0.3",
+    "@types/node": "^20",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "16.3.6",
+    "supabase": "2.117.0",
+    "tailwindcss": "^4",
+    "tsx": "^4.23.15",
+    "typescript": "^5"
+  },
+  "allowScripts": {
+    "supabase@2.117.0": true,
+    "ffmpeg-static@5.3.0": true
+  }
+}
