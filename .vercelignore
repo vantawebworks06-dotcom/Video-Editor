@@ -1,0 +1,12 @@
+# Never upload local secrets or heavy local artefacts to Vercel.
+.env
+.env.*
+!.env.example
+.vercel
+.cache
+output
+assets/library
+supabase/.temp
+supabase/.branches
+node_modules
+.next
