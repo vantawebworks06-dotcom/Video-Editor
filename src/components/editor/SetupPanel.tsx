@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { api, Button, Label, Select, Tag } from "@/components/ui";
+import { api, Button, Label, Progress, Select, Tag } from "@/components/ui";
 import { STYLE_PRESETS } from "@/lib/domain/presets";
 import type { ProjectSettings, ProviderId } from "@/lib/domain/types";
 import type { StatusData } from "./types";
@@ -31,13 +31,15 @@ export function SetupPanel({ status, onChanged, onAnalyzeReference }: { status: 
   const s = p.settings;
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  const [uploaded, setUploaded] = useState(0);
 
   const upload = async (kind: UploadKind, file: File | undefined) => {
     if (!file) return;
     setBusy(kind);
+    setUploaded(0);
     setMsg(null);
     try {
-      await uploadProjectFile(p.id, kind, file);
+      await uploadProjectFile(p.id, kind, file, { onProgress: setUploaded });
       setMsg(`${kind} uploaded`);
       onChanged();
     } catch (e) {
@@ -74,7 +76,12 @@ export function SetupPanel({ status, onChanged, onAnalyzeReference }: { status: 
           Analyse reference style
         </Button>
       )}
-      {busy && busy !== "settings" && <p className="text-xs text-muted">Uploading {busy}…</p>}
+      {busy && busy !== "settings" && (
+        <div className="space-y-1 text-xs text-muted">
+          <p>{uploaded >= 1 ? `Checking ${busy}…` : `Uploading ${busy}… ${Math.round(uploaded * 100)}%`}</p>
+          <Progress value={uploaded} />
+        </div>
+      )}
 
       <div className="space-y-3 border-t border-line pt-3">
         <div>

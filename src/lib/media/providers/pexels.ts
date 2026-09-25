@@ -99,7 +99,9 @@ export class PexelsProvider extends BaseProvider {
     const mp4s = v.video_files.filter((f) => f.file_type === "video/mp4" && f.width);
     const sorted = [...mp4s].sort((a, b) => (b.width ?? 0) - (a.width ?? 0));
     const best = sorted.find((f) => (f.width ?? 0) <= 1920) ?? sorted[0];
-    const preview = [...mp4s].sort((a, b) => (a.width ?? 0) - (b.width ?? 0)).find((f) => (f.width ?? 0) >= 480);
+    // Smallest rendition that still fills a 960×540 draft render (see toAssetRef's draftUrl).
+    const ascending = [...mp4s].sort((a, b) => (a.width ?? 0) - (b.width ?? 0));
+    const preview = ascending.find((f) => (f.width ?? 0) >= 960) ?? ascending.find((f) => (f.width ?? 0) >= 480);
     return {
       id: assetId("pexels", `video-${v.id}`),
       provider: "pexels",

@@ -11,19 +11,19 @@ export function useWaveform(url: string | null, buckets = 1200): number[] | null
     (async () => {
       try {
         const buf = await (await fetch(url)).arrayBuffer();
-        const ctx = new AudioContext();
+        // Decode at 8 kHz: plenty for peaks, ~1/6 the memory of the device's 48 kHz default.
+        const ctx = new OfflineAudioContext(1, 1, 8000);
         const audio = await ctx.decodeAudioData(buf);
         const data = audio.getChannelData(0);
         const size = Math.max(1, Math.floor(data.length / buckets));
         const out: number[] = [];
         for (let i = 0; i < buckets; i++) {
           let max = 0;
-          for (let j = i * size; j < Math.min(data.length, (i + 1) * size); j += 16) max = Math.max(max, Math.abs(data[j]!));
+          for (let j = i * size; j < Math.min(data.length, (i + 1) * size); j += 4) max = Math.max(max, Math.abs(data[j]!));
           out.push(max);
         }
         const top = Math.max(0.01, ...out);
         if (!cancelled) setPeaks(out.map((v) => v / top));
-        void ctx.close();
       } catch {
         if (!cancelled) setPeaks(null);
       }

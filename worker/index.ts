@@ -230,7 +230,7 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
 
   const result = await generateEdit(
     { projectTitle: project.name, transcript, settings, style, orientation, onlySceneIds, existing },
-    { director, creds, searchCache: new SupabaseSearchCache(db), onProgress: (s, p) => progress(s, p < 0 ? p : 0.25 + p * 0.72), log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`) },
+    { director, creds, searchCache: new SupabaseSearchCache(db), onProgress: (s, p) => progress(s, p < 0 ? p : 0.25 + p * 0.72), log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`), signal },
   );
   if (settings.originalFootage === "mix" && audio.video) {
     applyOriginalFootage(result.selections, result.plans, narrationFootageAsset(audio.video.storagePath, { ...audio.video, duration: audio.duration }), onlySceneIds);

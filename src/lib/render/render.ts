@@ -73,7 +73,7 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
     let result: PreparedAsset | null = null;
     for (const ref of tries) {
       try {
-        result = await prepareAsset(ref, { trimStart: clip.trimStart, duration: clip.duration }, { cacheDir: mediaDir, resolveLocal: opts.resolveLocal });
+        result = await prepareAsset(ref, { trimStart: clip.trimStart, duration: clip.duration }, { cacheDir: mediaDir, resolveLocal: opts.resolveLocal, draft: opts.draft });
         usedAssets[clip.id] = ref.assetId;
         if (ref !== clip.asset) warnings.push(`${clip.id}: primary asset failed; used alternate ${ref.assetId}.`);
         break;

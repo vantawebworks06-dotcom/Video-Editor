@@ -23,6 +23,11 @@ export interface PrepareContext {
   cacheDir: string;
   /** Resolve uploaded/storage assets to a local file (worker downloads from Supabase Storage). */
   resolveLocal?: (ref: AssetRef) => Promise<string | null>;
+  /**
+   * Draft (960×540) render: prepare at draft size with a faster encode instead of up to 1920 px
+   * (4× the pixels the draft uses). Cached separately from full-quality preparations.
+   */
+  draft?: boolean;
 }
 
 const MAX_DOWNLOAD_BYTES = 150 * 1024 * 1024;
@@ -123,7 +128,10 @@ export async function prepareAsset(
   const local = (await ctx.resolveLocal?.(ref)) ?? ref.localPath;
   const isStill = ref.type === "photo";
   const isSticker = ref.type === "sticker";
-  const key = stableHash({ url: local ?? ref.url, trim: isStill ? 0 : window.trimStart, dur: isStill ? 0 : Math.ceil(window.duration + 1) });
+  const draft = Boolean(ctx.draft);
+  const key = stableHash({ url: local ?? ref.url, trim: isStill ? 0 : window.trimStart, dur: isStill ? 0 : Math.ceil(window.duration + 1), draft: draft || undefined });
+  const maxStill = draft ? 1920 : 3840; // stills keep 2× headroom for zoom/pan motion
+  const maxVideo = draft ? 960 : 1920;
   const out = path.join(ctx.cacheDir, `${key}.${isStill ? "jpg" : isSticker ? "gif" : "mp4"}`);
 
   if (!existsSync(out)) {
@@ -149,22 +157,27 @@ export async function prepareAsset(
     const net = isUrl ? [...NETWORK_INPUT_ARGS, "-rw_timeout", "30000000", "-user_agent", USER_AGENT] : [];
     try {
       if (isStill) {
-        await runFfmpeg(["-i", input, "-vf", "scale='min(3840,iw)':-2:flags=lanczos,format=yuvj420p", "-frames:v", "1", "-q:v", "2", `${out}.tmp.jpg`], { timeoutMs: 120_000 });
+        await runFfmpeg(["-i", input, "-vf", `scale='min(${maxStill},iw)':-2:flags=lanczos,format=yuvj420p`, "-frames:v", "1", "-q:v", "2", `${out}.tmp.jpg`], { timeoutMs: 120_000 });
         await rename(`${out}.tmp.jpg`, out);
       } else if (isSticker) {
         await rename(input, out);
         tmpDownload = null;
       } else {
         const seek = window.trimStart > 0 ? ["-ss", window.trimStart.toFixed(3)] : [];
-        const src = input;
-        await withRetry(() => withHostSlot(isUrl ? src : "https://local.invalid", () => runFfmpeg(
-          [
-            ...net, ...seek, "-i", src, "-t", (window.duration + 1).toFixed(3), "-an",
-            "-vf", "scale='min(1920,iw)':-2:flags=bicubic,fps=30,format=yuv420p",
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "19", `${out}.tmp.mp4`,
-          ],
-          { timeoutMs: 5 * 60_000 },
-        )));
+        const encode = (src: string) =>
+          withRetry(() => withHostSlot(isUrl ? src : "https://local.invalid", () => runFfmpeg(
+            [
+              ...net, ...seek, "-i", src, "-t", (window.duration + 1).toFixed(3), "-an",
+              "-vf", `scale='min(${maxVideo},iw)':-2:flags=bicubic,fps=30,format=yuv420p`,
+              "-c:v", "libx264", "-preset", draft ? "ultrafast" : "veryfast", "-crf", draft ? "21" : "19", `${out}.tmp.mp4`,
+            ],
+            { timeoutMs: 5 * 60_000 },
+          )));
+        // Drafts stream the provider's smaller rendition of the same video (Pexels 1080p file:
+        // 16 MB vs 2.5 MB), falling back to the full file if that rendition fails.
+        const small = draft && isUrl && ref.draftUrl && isAllowedMediaUrl(ref.draftUrl) ? ref.draftUrl : null;
+        if (small) await encode(small).catch(() => encode(input));
+        else await encode(input);
         await rename(`${out}.tmp.mp4`, out);
       }
     } finally {

@@ -11,6 +11,18 @@ export function cx(...c: (string | false | null | undefined)[]) {
 
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
+/**
+ * Remote thumbnail filling its (relative) parent. Unlike a CSS background image it loads lazily,
+ * only once scrolled near the viewport, so long lists don't fetch every thumbnail up front.
+ */
+export function Thumb({ src, fit = "cover" }: { src: string | null | undefined; fit?: "cover" | "contain" }) {
+  if (!src) return null;
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- remote provider thumbnails from many hosts
+    <img src={src} alt="" loading="lazy" decoding="async" className={cx("pointer-events-none absolute inset-0 h-full w-full", fit === "cover" ? "object-cover" : "object-contain")} />
+  );
+}
+
 export function Button({ variant = "secondary", size = "md", className, ...props }: ButtonHTMLAttributes<HTMLButtonElement> & { variant?: Variant; size?: "sm" | "md" }) {
   return (
     <button

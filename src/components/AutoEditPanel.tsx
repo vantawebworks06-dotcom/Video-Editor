@@ -44,8 +44,11 @@ export function AutoEditPanel() {
         method: "POST",
         json: { name, stylePreset: style, memeFrequency: memes, captions, originalFootage: footage },
       });
-      setStep(`Uploading… (${Math.round(file.size / 1024 / 1024)} MB)`);
-      await uploadProjectFile(id, "narration", file);
+      const mb = file.size / 1024 / 1024;
+      setStep(`Uploading… 0% of ${mb.toFixed(1)} MB`);
+      await uploadProjectFile(id, "narration", file, {
+        onProgress: (f) => setStep(f >= 1 ? "Checking upload…" : `Uploading… ${Math.round(f * 100)}% of ${mb.toFixed(1)} MB`),
+      });
       setStep("Starting analysis…");
       await api(`/api/projects/${id}/jobs`, { method: "POST", json: { type: "generate", autoRender: "draft" } });
       router.push(`/projects/${id}`);

@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { api, Button, cx, Input, RightsBadge, Tag } from "@/components/ui";
+import { api, Button, cx, Input, RightsBadge, Tag, Thumb } from "@/components/ui";
+import { stillThumbnail } from "@/lib/media/thumbnails";
 import type { NormalizedAsset } from "@/lib/domain/types";
 
 type LibAsset = NormalizedAsset & { rowId: string; isFavorite: boolean; userApproved: boolean };
@@ -121,7 +122,8 @@ export default function LibraryPage() {
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-6">
           {assets.map((a) => (
             <div key={a.rowId} className="overflow-hidden rounded-lg border border-line bg-panel">
-              <div className="relative aspect-video bg-black bg-contain bg-center bg-no-repeat" style={{ backgroundImage: a.thumbnailUrl ? `url(${a.thumbnailUrl})` : undefined }}>
+              <div className="relative aspect-video bg-black">
+                <Thumb src={a.thumbnailUrl && stillThumbnail(a.thumbnailUrl)} fit="contain" />
                 <span className="absolute left-1 top-1">
                   <RightsBadge status={a.rightsStatus} />
                 </span>

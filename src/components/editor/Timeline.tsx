@@ -1,12 +1,40 @@
 "use client";
 
-import { useState } from "react";
+import { memo, useMemo, useState } from "react";
 import { cx, fmtTime } from "@/components/ui";
+import { stillThumbnail } from "@/lib/media/thumbnails";
+import { type PlayheadStore, usePlayhead } from "./playhead";
 import type { Clip, EditData } from "./types";
 
 const ROW = "relative h-10 border-b border-line";
 
-export function Timeline({
+/** The only part of the timeline that follows playback. */
+function PlayheadLine({ store, zoom }: { store: PlayheadStore; zoom: number }) {
+  const t = usePlayhead(store);
+  return <div className="pointer-events-none absolute top-0 bottom-0 w-px bg-danger" style={{ left: t * zoom }} />;
+}
+
+/** Narration peaks as one SVG path (was one <line> element per peak). */
+const Waveform = memo(function Waveform({ peaks }: { peaks: number[] }) {
+  const d = useMemo(() => peaks.map((v, i) => `M${i} ${(50 - v * 45).toFixed(1)}V${(50 + v * 45).toFixed(1)}`).join(""), [peaks]);
+  return (
+    <svg className="absolute inset-0 h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${peaks.length} 100`} data-seek="1">
+      <path d={d} stroke="#5b9bf0" strokeOpacity="0.7" data-seek="1" />
+    </svg>
+  );
+});
+
+/** Word blocks as one SVG path in seconds (was one element per word). */
+const WordBlocks = memo(function WordBlocks({ words, duration }: { words: EditData["words"]; duration: number }) {
+  const d = useMemo(() => words.map((w) => `M${w.start} 12h${Math.max(0.01, w.end - w.start)}v16h${-Math.max(0.01, w.end - w.start)}z`).join(""), [words]);
+  return (
+    <svg className="absolute inset-0 h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${duration} 40`} data-seek="1">
+      <path d={d} className="fill-info/40 stroke-info/40" strokeWidth="1" vectorEffect="non-scaling-stroke" data-seek="1" />
+    </svg>
+  );
+});
+
+export const Timeline = memo(function Timeline({
   data,
   peaks,
   playhead,
@@ -19,7 +47,7 @@ export function Timeline({
 }: {
   data: EditData;
   peaks: number[] | null;
-  playhead: number;
+  playhead: PlayheadStore;
   musicLabel: string;
   selectedClip: string | null;
   selectedScene: string | null;
@@ -93,17 +121,7 @@ export function Timeline({
             </div>
             {/* narration waveform */}
             <div className={ROW} data-seek="1">
-              {peaks ? (
-                <svg className="absolute inset-0 h-full w-full" preserveAspectRatio="none" viewBox={`0 0 ${peaks.length} 100`} data-seek="1">
-                  {peaks.map((v, i) => (
-                    <line key={i} x1={i} x2={i} y1={50 - v * 45} y2={50 + v * 45} stroke="#5b9bf0" strokeOpacity="0.7" data-seek="1" />
-                  ))}
-                </svg>
-              ) : (
-                data.words.map((w, i) => (
-                  <span key={i} className="absolute top-3 h-4 rounded-sm bg-info/40" style={{ left: x(w.start), width: Math.max(1, x(w.end - w.start)) }} data-seek="1" />
-                ))
-              )}
+              {peaks ? <Waveform peaks={peaks} /> : <WordBlocks words={data.words} duration={duration} />}
             </div>
             {/* visuals */}
             <div className={ROW}>
@@ -116,8 +134,13 @@ export function Timeline({
                     "absolute top-0.5 bottom-0.5 overflow-hidden rounded border bg-cover bg-center",
                     selectedClip === c.clipId ? "border-accent ring-1 ring-accent" : c.role === "meme" ? "border-[#b56cf0]" : "border-line",
                   )}
-                  style={{ left: x(c.start), width: Math.max(3, x(c.duration) - 1), backgroundImage: c.asset.thumbnailUrl ? `url(${c.asset.thumbnailUrl})` : undefined }}
+                  style={{ left: x(c.start), width: Math.max(3, x(c.duration) - 1) }}
                 >
+                  {c.asset.thumbnailUrl && (
+                    // Lazy: only thumbnails scrolled into view load; GIFs show their still frame.
+                    // eslint-disable-next-line @next/next/no-img-element -- remote provider thumbnails, many hosts
+                    <img src={stillThumbnail(c.asset.thumbnailUrl)} alt="" loading="lazy" decoding="async" className="pointer-events-none absolute inset-0 h-full w-full object-cover" />
+                  )}
                   <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 text-left text-[9px] text-white">
                     {c.role === "meme" ? "MEME · " : ""}
                     {c.asset.type}
@@ -162,11 +185,10 @@ export function Timeline({
                 {musicLabel} · ducked under narration
               </span>
             </div>
-            {/* playhead */}
-            <div className="pointer-events-none absolute top-0 bottom-0 w-px bg-danger" style={{ left: x(playhead) }} />
+            <PlayheadLine store={playhead} zoom={zoom} />
           </div>
         </div>
       </div>
     </div>
   );
-}
+});

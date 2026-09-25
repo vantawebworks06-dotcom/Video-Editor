@@ -9,11 +9,29 @@ import { ReplaceDialog } from "./ReplaceDialog";
 import { ReviewPanel } from "./ReviewPanel";
 import { RightsPanel } from "./RightsPanel";
 import { SetupPanel } from "./SetupPanel";
+import { createPlayhead } from "./playhead";
 import { Timeline } from "./Timeline";
 import type { Clip, EditData, StatusData } from "./types";
 import { useWaveform } from "./useWaveform";
 
 const ACTIVE = ["QUEUED", "RUNNING", "DOWNLOADING", "PREPARING", "RENDERING", "FINALIZING"];
+const SIGNED_URL_REUSE_MS = 45 * 60_000; // the status route signs URLs for 1 h
+
+/**
+ * The status route leaves a URL null when the editor already holds one for the same file
+ * (uploads/exports get unique paths). Keep the held URL: a changed URL would reload the preview
+ * video and re-download + re-decode the whole narration for the waveform.
+ */
+function mergeStatus(prev: StatusData | null, next: StatusData): StatusData {
+  if (!prev) return next;
+  const pe = prev.latestExport;
+  const ne = next.latestExport;
+  return {
+    ...next,
+    narrationUrl: next.narrationUrl ?? (next.narrationPath && next.narrationPath === prev.narrationPath ? prev.narrationUrl : null),
+    latestExport: ne && !ne.url && pe?.id === ne.id ? { ...ne, url: pe.url, downloadUrl: pe.downloadUrl } : ne,
+  };
+}
 
 export function Editor({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<StatusData | null>(null);
@@ -27,21 +45,40 @@ export function Editor({ projectId }: { projectId: string }) {
   const [centerTab, setCenterTab] = useState<"preview" | "review">("preview");
   const [showRights, setShowRights] = useState(false);
   const [format, setFormat] = useState<"landscape" | "vertical" | "draft">("draft");
-  const [playhead, setPlayhead] = useState(0);
+  const [playhead] = useState(createPlayhead);
   const [busy, setBusy] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
   const lastSeen = useRef<string>("");
+  const statusRef = useRef<StatusData | null>(null);
+  // Signed URLs the editor holds, reported to the status route so it doesn't re-sign them.
+  const held = useRef({ exportId: null as string | null, narrationPath: null as string | null, signedAt: 0 });
+
+  const applyStatus = useCallback((s: StatusData, freshlySigned: boolean) => {
+    const merged = mergeStatus(statusRef.current, s);
+    if (freshlySigned) held.current.signedAt = Date.now();
+    held.current.exportId = merged.latestExport?.url && !merged.latestExport.local ? merged.latestExport.id : null;
+    held.current.narrationPath = merged.narrationUrl ? merged.narrationPath : null;
+    // An unchanged poll must not re-render the whole editor.
+    if (statusRef.current && JSON.stringify(statusRef.current) === JSON.stringify(merged)) return;
+    statusRef.current = merged;
+    setStatus(merged);
+  }, []);
 
   const loadStatus = useCallback(async () => {
     try {
-      const s = await api<StatusData>(`/api/projects/${projectId}/status`);
-      setStatus(s);
+      const h = held.current;
+      const reuse = Date.now() - h.signedAt < SIGNED_URL_REUSE_MS;
+      const q = new URLSearchParams();
+      if (reuse && h.exportId) q.set("exportId", h.exportId);
+      if (reuse && h.narrationPath) q.set("narration", h.narrationPath);
+      const s = await api<StatusData>(`/api/projects/${projectId}/status${q.size ? `?${q}` : ""}`);
+      applyStatus(s, !reuse);
       return s;
     } catch (e) {
       setError((e as Error).message);
       return null;
     }
-  }, [projectId]);
+  }, [projectId, applyStatus]);
 
   const loadEdit = useCallback(async () => {
     try {
@@ -60,28 +97,66 @@ export function Editor({ projectId }: { projectId: string }) {
     Promise.all([api<StatusData>(`/api/projects/${projectId}/status`), api<EditData>(`/api/projects/${projectId}/edit`)])
       .then(([s, e]) => {
         if (!alive) return;
-        setStatus(s);
+        applyStatus(s, true);
         setEdit(e);
       })
       .catch((e: Error) => alive && setError(e.message));
     return () => {
       alive = false;
     };
-  }, [projectId]);
+  }, [projectId, applyStatus]);
 
-  // Poll: fast while a job runs, slow otherwise. Reload the edit when a job finishes.
+  // Poll: fast while a job runs, slow otherwise; reload the edit when a job finishes. The next
+  // poll is scheduled only after the previous one returns (a slow response never stacks
+  // requests), and polling pauses while the tab is hidden, catching up as soon as it is visible.
   const running = Boolean(status && (ACTIVE.includes(status.pipelineJob?.status ?? "") || ACTIVE.includes(status.renderJob?.status ?? "")));
   useEffect(() => {
-    const t = setInterval(async () => {
-      const s = await loadStatus();
-      const key = `${s?.pipelineJob?.id}:${s?.pipelineJob?.status}:${s?.project.timelineVersion}`;
-      if (s && key !== lastSeen.current) {
-        if (lastSeen.current) void loadEdit();
-        lastSeen.current = key;
+    const every = running ? 2000 : 10000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let inFlight = false;
+    let stopped = false;
+    const tick = async () => {
+      if (!document.hidden) {
+        inFlight = true;
+        const s = await loadStatus();
+        inFlight = false;
+        const key = `${s?.pipelineJob?.id}:${s?.pipelineJob?.status}:${s?.project.timelineVersion}`;
+        if (s && key !== lastSeen.current) {
+          if (lastSeen.current) void loadEdit();
+          lastSeen.current = key;
+        }
       }
-    }, running ? 2000 : 10000);
-    return () => clearInterval(t);
+      if (!stopped) timer = setTimeout(tick, every);
+    };
+    const onVisible = () => {
+      if (document.hidden || inFlight) return;
+      clearTimeout(timer);
+      void tick();
+    };
+    timer = setTimeout(tick, every);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [running, loadStatus, loadEdit]);
+
+  const selectClip = useCallback((c: Clip) => {
+    setSelectedClip(c.clipId);
+    setSelectedScene(c.sceneId);
+  }, []);
+  const selectScene = useCallback((id: string) => {
+    setSelectedScene(id);
+    setSelectedClip(null);
+  }, []);
+  const seek = useCallback(
+    (t: number) => {
+      playhead.set(t);
+      if (videoRef.current) videoRef.current.currentTime = t;
+    },
+    [playhead],
+  );
 
   const peaks = useWaveform(status?.narrationUrl ?? null);
 
@@ -227,10 +302,8 @@ export function Editor({ projectId }: { projectId: string }) {
                       <button
                         className="min-w-0 flex-1 text-left"
                         onClick={() => {
-                          setSelectedScene(s.sceneId);
-                          setSelectedClip(null);
-                          setPlayhead(s.startTime);
-                          if (videoRef.current) videoRef.current.currentTime = s.startTime;
+                          selectScene(s.sceneId);
+                          seek(s.startTime);
                         }}
                       >
                         <div className="mb-0.5 flex items-center gap-1.5">
@@ -264,10 +337,7 @@ export function Editor({ projectId }: { projectId: string }) {
                 projectId={projectId}
                 data={edit}
                 selectedClip={selectedClip}
-                onSelect={(c) => {
-                  setSelectedClip(c.clipId);
-                  setSelectedScene(c.sceneId);
-                }}
+                onSelect={selectClip}
                 onReplace={(c, tab) => setReplacing({ clip: c, tab })}
                 onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
                 onChanged={() => void refresh()}
@@ -285,9 +355,10 @@ export function Editor({ projectId }: { projectId: string }) {
                 ref={videoRef}
                 key={status.latestExport.id}
                 src={status.latestExport.url}
+                preload="metadata"
                 controls
                 className="max-h-full max-w-full"
-                onTimeUpdate={(e) => setPlayhead(e.currentTarget.currentTime)}
+                onTimeUpdate={(e) => playhead.set(e.currentTarget.currentTime)}
               />
               <div className="mt-2 text-[11px] text-muted">
                 Last render: {status.latestExport.format} · {new Date(status.latestExport.created_at).toLocaleString()}
@@ -329,18 +400,9 @@ export function Editor({ projectId }: { projectId: string }) {
             musicLabel={music}
             selectedClip={selectedClip}
             selectedScene={selectedScene}
-            onSelectClip={(c) => {
-              setSelectedClip(c.clipId);
-              setSelectedScene(c.sceneId);
-            }}
-            onSelectScene={(id) => {
-              setSelectedScene(id);
-              setSelectedClip(null);
-            }}
-            onSeek={(t) => {
-              setPlayhead(t);
-              if (videoRef.current) videoRef.current.currentTime = t;
-            }}
+            onSelectClip={selectClip}
+            onSelectScene={selectScene}
+            onSeek={seek}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-muted">The timeline appears after generation.</div>

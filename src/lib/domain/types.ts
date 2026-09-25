@@ -248,6 +248,8 @@ export const AssetRef = z.object({
   assetId: z.string(),
   type: AssetType,
   url: z.string(),
+  /** Smaller rendition of the same video, streamed instead of `url` for draft renders. */
+  draftUrl: z.string().nullable().optional(),
   /** Local file once downloaded/prepared; set by the renderer, never by AI. */
   localPath: z.string().nullable(),
   width: z.number().nullable(),

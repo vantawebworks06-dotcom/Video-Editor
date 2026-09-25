@@ -1,17 +1,29 @@
 "use client";
 
-import { useState } from "react";
-import { api, Button, cx, fmtTime, RightsBadge, Select, Tag } from "@/components/ui";
+import { useMemo, useState } from "react";
+import { api, Button, cx, fmtTime, RightsBadge, Select, Tag, Thumb } from "@/components/ui";
 import type { Word } from "@/lib/domain/types";
 import type { Clip, EditData } from "./types";
 
 const EFFECTS = ["none", "slow_zoom_in", "slow_zoom_out", "pan_left", "pan_right", "pan_up", "pan_down", "diagonal", "subtle_rotation", "punch_in"];
 
-function narrationFor(words: Word[], start: number, end: number) {
-  return words
-    .filter((w) => w.start < end && w.end > start)
-    .map((w) => w.word)
-    .join(" ");
+/** Narration under each clip. Words are time-ordered, so each clip scans only its own span. */
+function narrationByClip(words: Word[], clips: Clip[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const c of clips) {
+    const end = c.start + c.duration;
+    let lo = 0;
+    let hi = words.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (words[mid]!.end <= c.start) lo = mid + 1;
+      else hi = mid;
+    }
+    const text: string[] = [];
+    for (let i = lo; i < words.length && words[i]!.start < end; i++) if (words[i]!.end > c.start) text.push(words[i]!.word);
+    out.set(c.rowId, text.join(" "));
+  }
+  return out;
 }
 
 /**
@@ -37,6 +49,9 @@ export function ReviewPanel({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Recomputed only when the edit reloads, not on every status poll.
+  const narration = useMemo(() => narrationByClip(data.words, data.clips), [data.words, data.clips]);
+  const plans = useMemo(() => new Map(data.plans.map((p) => [p.sceneId, p])), [data.plans]);
 
   const act = async (c: Clip, json: unknown) => {
     setBusy(c.clipId);
@@ -67,14 +82,12 @@ export function ReviewPanel({
         <tbody className="divide-y divide-line">
           {data.clips.map((c) => {
             const own = c.asset.provider === "uploaded";
-            const plan = data.plans.find((p) => p.sceneId === c.sceneId);
+            const plan = plans.get(c.sceneId);
             return (
               <tr key={c.rowId} className={cx("align-top", selectedClip === c.clipId ? "bg-accent/10" : "hover:bg-panel-2")} onClick={() => onSelect(c)}>
                 <td className="w-36 p-2">
-                  <div
-                    className="flex aspect-video w-32 items-center justify-center rounded bg-black bg-cover bg-center text-[10px] text-muted"
-                    style={{ backgroundImage: c.asset.thumbnailUrl ? `url(${c.asset.thumbnailUrl})` : undefined }}
-                  >
+                  <div className="relative flex aspect-video w-32 items-center justify-center overflow-hidden rounded bg-black text-[10px] text-muted">
+                    <Thumb src={c.asset.thumbnailUrl} />
                     {own ? "Your footage" : !c.asset.thumbnailUrl ? c.asset.type : null}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1">
@@ -86,7 +99,7 @@ export function ReviewPanel({
                   <div className="mb-0.5 text-muted">
                     {fmtTime(c.start)} – {fmtTime(c.start + c.duration)} · {c.sceneId.replace("scene_", "scene #")}
                   </div>
-                  <p className="line-clamp-3">{narrationFor(data.words, c.start, c.start + c.duration) || <span className="text-muted">(pause)</span>}</p>
+                  <p className="line-clamp-3">{narration.get(c.rowId) ||<span className="text-muted">(pause)</span>}</p>
                 </td>
                 <td className="p-2 whitespace-nowrap">{c.duration.toFixed(1)}s</td>
                 <td className="max-w-[220px] p-2">

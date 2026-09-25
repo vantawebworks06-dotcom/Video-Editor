@@ -26,11 +26,15 @@ const TEXT_SIZE: Record<TextClip["style"], number> = {
   dramatic: 130,
 };
 
+// Providers whose previewUrl is a smaller MP4 rendition of the same video (others: an image).
+const VIDEO_RENDITION_PREVIEWS = new Set(["pexels", "pixabay"]);
+
 export function toAssetRef(a: NormalizedAsset): AssetRef {
   return {
     assetId: a.id,
     type: a.type,
     url: a.mediaUrl,
+    draftUrl: a.type === "video" && VIDEO_RENDITION_PREVIEWS.has(a.provider) && a.previewUrl && a.previewUrl !== a.mediaUrl ? a.previewUrl : null,
     localPath: null,
     width: a.width,
     height: a.height,

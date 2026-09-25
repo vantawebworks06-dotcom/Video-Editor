@@ -12,14 +12,19 @@ import { resolveCredentials } from "@/lib/settings/apiKeys";
 export const POST = route(async (_req: NextRequest, ctx: RouteContext<"/api/projects/[id]/clips/[clipKey]/recommend">) => {
   const auth = await requireUser();
   const { id, clipKey } = await ctx.params;
-  const project = await requireProject(auth, id);
-  const edit = await loadEdit(auth.supabase, project.id);
+  // Independent lookups run together (all RLS-scoped or keyed by the signed-in user).
+  const [project, edit, creds] = await Promise.all([
+    requireProject(auth, id),
+    loadEdit(auth.supabase, id, { alternates: false }),
+    resolveCredentials(auth.userId),
+  ]);
   const clip = edit.selections.find((s) => s.clipId === clipKey);
   if (!clip) throw new HttpError(404, "Clip not found");
   const plan = edit.plans.find((p) => p.sceneId === clip.sceneId);
 
   const settings = parseSettings(project.settings);
-  const creds = await resolveCredentials(auth.userId);
+  const style = resolveStyle(auth.supabase, (project.style_profile_id as string) ?? null, settings);
+  style.catch(() => undefined); // awaited below; don't let an early failure go unhandled
   const admin = maybeAdmin();
   const { claude, usage } = makeClaude(creds, settings, admin, { userId: auth.userId, projectId: project.id });
   const director = makeDirector(claude, settings);
@@ -55,7 +60,7 @@ export const POST = route(async (_req: NextRequest, ctx: RouteContext<"/api/proj
       recentKinds: recent,
       usedAssetIds: new Set(edit.selections.map((s) => s.asset.id)),
     },
-    { style: await resolveStyle(auth.supabase, (project.style_profile_id as string) ?? null, settings), settings, projectTitle: project.name, orientation: "landscape" },
+    { style: await style, settings, projectTitle: project.name, orientation: "landscape" },
   );
 
   return NextResponse.json({

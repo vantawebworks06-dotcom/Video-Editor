@@ -12,7 +12,8 @@ import type {
 } from "@/lib/domain/types";
 import type { SearchCache } from "@/lib/media/cache";
 import type { ProviderCredentials } from "@/lib/media/providers/types";
-import { searchMedia, type SearchError } from "@/lib/media/searchOrchestrator";
+import { createLimiter } from "@/lib/limiter";
+import { searchMedia, type SearchError, type SearchRequest, type SearchResponse } from "@/lib/media/searchOrchestrator";
 import type { Director, DirectorContext, RankedCandidate, SceneSegment } from "./director";
 import { assetTypesForNeed, kindOf, shouldInsertMeme, type VisualKind } from "./engines";
 import { HeuristicDirector } from "./heuristicDirector";
@@ -58,6 +59,8 @@ export interface GenerateDeps {
   searchCache?: SearchCache;
   onProgress?: (stage: string, progress: number) => void | Promise<void>;
   log?: (msg: string) => void;
+  /** Aborting stops searches that haven't started yet (the job was cancelled). */
+  signal?: AbortSignal;
 }
 
 export interface GenerateResult {
@@ -127,6 +130,19 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
   let scenesSinceMeme = 99;
   const targets = plans.filter((p) => !input.onlySceneIds || input.onlySceneIds.has(p.sceneId));
 
+  // Searching doesn't depend on earlier picks (only ranking does, via `used`/`recent`), so every
+  // visual's primary search starts now, a few at a time, while selection below still runs in
+  // timeline order and awaits each result. Was: one search after another.
+  const searchSlots = createLimiter(SEARCH_CONCURRENCY, deps.signal);
+  const prefetched = new Map<string, Promise<SearchResponse>>();
+  for (const plan of targets) {
+    plan.visualNeeds.forEach((need, ni) => {
+      const p = searchSlots(() => searchMedia(primarySearch(need, need.queries, ctx, input.settings), { creds: deps.creds, cache: deps.searchCache }));
+      p.catch(() => undefined); // awaited (and surfaced) in selectForNeed
+      prefetched.set(`${plan.sceneId}_c${ni + 1}`, p);
+    });
+  }
+
   for (const [pi, plan] of plans.entries()) {
     if (!targets.includes(plan)) {
       const keptHere = kept.filter((s) => s.sceneId === plan.sceneId);
@@ -141,7 +157,7 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
     const sceneSelections: SceneSelection[] = [];
     for (const [ni, need] of plan.visualNeeds.entries()) {
       const clipId = `${plan.sceneId}_c${ni + 1}`;
-      const chosen = await selectForNeed(plan, need, clipId, cursor, ctx, deps, used, recent, searchErrors, input.settings);
+      const chosen = await selectForNeed(plan, need, clipId, cursor, ctx, deps, used, recent, searchErrors, input.settings, prefetched.get(clipId));
       if (chosen) {
         sceneSelections.push(chosen);
         used.add(chosen.asset.id);
@@ -216,6 +232,27 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
   return { plans, selections, warnings, searchErrors };
 }
 
+/** Visuals searched at once; each search also fans out over queries × providers (see searchMedia). */
+const SEARCH_CONCURRENCY = 3;
+
+/** The provider search for one visual need (primary visuals: CLEAR / ATTRIBUTION_REQUIRED only). */
+function primarySearch(need: VisualNeed, queries: string[], ctx: DirectorContext, settings: ProjectSettings): SearchRequest {
+  return {
+    queries,
+    types: assetTypesForNeed(need.type),
+    providers: providersForNeed(need, settings.enabledProviders),
+    orientation: ctx.orientation,
+    minDuration: need.type === "video" ? Math.min(need.duration + 0.5, 20) : undefined,
+    perQuery: settings.budgetMode ? 6 : 10,
+    maxQueries: settings.budgetMode ? 2 : 4,
+    preferArchival: need.type === "archival" || ctx.style.archivalPercentage > 30,
+    allowReview: false,
+    allowUnknown: false,
+    gifRating: settings.gifRating,
+    limit: settings.budgetMode ? 8 : 16,
+  };
+}
+
 async function selectForNeed(
   plan: ScenePlan,
   need: VisualNeed,
@@ -227,31 +264,15 @@ async function selectForNeed(
   recent: VisualKind[],
   searchErrors: SearchError[],
   settings: ProjectSettings,
+  prefetched?: Promise<SearchResponse>,
 ): Promise<SceneSelection | null> {
-  const providers = providersForNeed(need, settings.enabledProviders);
-  const attempt = async (queries: string[]) => {
-    const r = await searchMedia(
-      {
-        queries,
-        types: assetTypesForNeed(need.type),
-        providers,
-        orientation: ctx.orientation,
-        minDuration: need.type === "video" ? Math.min(need.duration + 0.5, 20) : undefined,
-        perQuery: settings.budgetMode ? 6 : 10,
-        maxQueries: settings.budgetMode ? 2 : 4,
-        preferArchival: need.type === "archival" || ctx.style.archivalPercentage > 30,
-        allowReview: false, // auto-selection of primary visuals: CLEAR / ATTRIBUTION_REQUIRED only
-        allowUnknown: false,
-        gifRating: settings.gifRating,
-        limit: settings.budgetMode ? 8 : 16,
-      },
-      { creds: deps.creds, cache: deps.searchCache },
-    );
+  const attempt = async (queries: string[], started?: Promise<SearchResponse>) => {
+    const r = await (started ?? searchMedia(primarySearch(need, queries, ctx, settings), { creds: deps.creds, cache: deps.searchCache }));
     searchErrors.push(...r.errors);
     return r.candidates;
   };
 
-  let candidates = await attempt(need.queries);
+  let candidates = await attempt(need.queries, prefetched);
   if (!candidates.length) {
     // Broaden: individual keywords from the queries, then any photo/video type.
     const words = [...new Set(need.queries.join(" ").split(/\s+/).filter((w) => w.length > 4))].slice(0, 3);

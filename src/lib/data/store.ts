@@ -7,7 +7,7 @@ import {
   type ScenePlan,
   ScenePlan as ScenePlanSchema,
 } from "@/lib/domain/types";
-import { type CachedSearch, SEARCH_CACHE_TTL_MS, type SearchCache, stableHash } from "@/lib/media/cache";
+import { type CachedSearch, type SearchCache, searchCacheTtlMs, stableHash } from "@/lib/media/cache";
 import type { GenerateResult, SceneSelection } from "@/lib/pipeline/generate";
 import { z } from "zod";
 
@@ -21,7 +21,7 @@ export class SupabaseSearchCache implements SearchCache {
     const { data } = await this.db.from("search_cache").select("provider, query, results, created_at").eq("cache_key", key).maybeSingle();
     if (!data) return null;
     const ts = new Date(data.created_at).getTime();
-    if (Date.now() - ts > SEARCH_CACHE_TTL_MS) return null;
+    if (Date.now() - ts > searchCacheTtlMs(data.provider)) return null;
     return { provider: data.provider, query: data.query, results: data.results as NormalizedAsset[], timestamp: ts };
   }
   async set(key: string, v: CachedSearch) {
@@ -190,6 +190,9 @@ export async function saveGeneration(
 ) {
   const plans = onlySceneIds ? result.plans.filter((p) => onlySceneIds.has(p.sceneId)) : result.plans;
   const selections = onlySceneIds ? result.selections.filter((s) => onlySceneIds.has(s.sceneId)) : result.selections;
+  // The asset library upsert doesn't depend on the scene writes, so it runs alongside them.
+  const assetIdsPending = upsertAssets(db, ctx.userId, selections.map((s) => s.asset));
+  assetIdsPending.catch(() => undefined); // awaited below
 
   if (!onlySceneIds) {
     const { error } = await db.from("scenes").delete().eq("project_id", ctx.projectId);
@@ -220,7 +223,7 @@ export async function saveGeneration(
     await db.from("scene_assets").delete().in("scene_id", [...sceneIds.values()]);
   }
 
-  const assetIds = await upsertAssets(db, ctx.userId, selections.map((s) => s.asset));
+  const assetIds = await assetIdsPending;
   const rows = selections.map((s, i) => selectionToRow(ctx, s, sceneIds.get(s.sceneId)!, assetIds.get(s.asset.id)!, i));
   if (rows.length) {
     const { error } = await db.from("scene_assets").insert(rows);
@@ -262,20 +265,30 @@ export interface LoadedEdit {
   selections: (SceneSelection & { rowId: string; assetRowId: string; userApproved: boolean })[];
 }
 
-/** Load plans + placements from the DB, re-validating JSON before it can reach the renderer. */
-export async function loadEdit(db: SupabaseClient, projectId: string): Promise<LoadedEdit> {
-  const { data: scenes, error } = await db.from("scenes").select("scene_key, plan").eq("project_id", projectId).order("idx");
+const PLACEMENT_COLUMNS =
+  "id, clip_key, start_time, duration, need_type, need_description, queries, scores, overall_score, reason, role, selected_by, layout, motion, treatment, annotations, trim_start, scenes!inner(scene_key), assets!inner(*)";
+
+/**
+ * Load plans + placements from the DB, re-validating JSON before it can reach the renderer.
+ * `alternates: false` skips each clip's fallback candidates (only the renderer needs them;
+ * they are most of the payload), returning empty lists instead.
+ */
+export async function loadEdit(db: SupabaseClient, projectId: string, opts: { alternates?: boolean } = {}): Promise<LoadedEdit> {
+  const withAlternates = opts.alternates ?? true;
+  const [{ data: scenes, error }, { data: placed, error: pErr }] = await Promise.all([
+    db.from("scenes").select("scene_key, plan").eq("project_id", projectId).order("idx"),
+    db
+      .from("scene_assets")
+      .select(withAlternates ? `${PLACEMENT_COLUMNS}, alternates` : PLACEMENT_COLUMNS)
+      .eq("project_id", projectId)
+      .order("start_time"),
+  ]);
   if (error) throw new Error(error.message);
+  if (pErr) throw new Error(pErr.message);
   const plans = (scenes ?? []).map((s) => ScenePlanSchema.parse(s.plan));
 
-  const { data: placed, error: pErr } = await db
-    .from("scene_assets")
-    .select("*, scenes!inner(scene_key), assets!inner(*)")
-    .eq("project_id", projectId)
-    .order("start_time");
-  if (pErr) throw new Error(pErr.message);
-
-  const selections = (placed ?? []).map((r) => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- untyped client; the select string is dynamic
+  const selections = ((placed ?? []) as any[]).map((r) => {
     const motion = MotionJson.parse(r.motion);
     const asset = assetRowToNormalized(r.assets as AssetRow);
     return {
@@ -290,7 +303,7 @@ export async function loadEdit(db: SupabaseClient, projectId: string): Promise<L
       needDescription: r.need_description ?? "",
       queries: r.queries ?? [],
       asset,
-      alternates: z.array(NormalizedAssetSchema).catch([]).parse(r.alternates),
+      alternates: withAlternates ? z.array(NormalizedAssetSchema).catch([]).parse(r.alternates) : [],
       scores: r.scores,
       overall: r.overall_score === null ? null : Number(r.overall_score),
       reason: r.reason ?? "",

@@ -19,7 +19,8 @@
     "test:providers": "tsx --env-file-if-exists=.env.local scripts/test-providers.ts",
     "typecheck": "tsc --noEmit",
     "test:e2e": "tsx --env-file-if-exists=.env.local scripts/e2e.ts",
-    "test:autoedit": "tsx --env-file-if-exists=.env.local scripts/e2e-autoedit.ts"
+    "test:autoedit": "tsx --env-file-if-exists=.env.local scripts/e2e-autoedit.ts",
+    "bench": "tsx --env-file-if-exists=.env.local scripts/bench.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

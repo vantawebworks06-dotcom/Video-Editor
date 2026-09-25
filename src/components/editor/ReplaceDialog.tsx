@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { api, Button, ComingSoon, cx, Input, RightsBadge } from "@/components/ui";
+import { api, Button, ComingSoon, cx, Input, RightsBadge, Thumb } from "@/components/ui";
 import type { AssetType, ProviderId, RightsStatus } from "@/lib/domain/types";
 import type { Candidate, Clip } from "./types";
 
@@ -151,7 +151,8 @@ export function ReplaceDialog({ projectId, clip, initialTab = "ai", onClose, onR
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-4">
             {list?.map((c) => (
               <div key={c.id} className="flex flex-col overflow-hidden rounded-lg border border-line bg-panel-2">
-                <div className="relative aspect-video bg-black bg-contain bg-center bg-no-repeat" style={{ backgroundImage: c.thumbnailUrl ? `url(${c.thumbnailUrl})` : undefined }}>
+                <div className="relative aspect-video bg-black">
+                  <Thumb src={c.thumbnailUrl} fit="contain" />
                   <span className="absolute left-1 top-1">
                     <RightsBadge status={c.rightsStatus} />
                   </span>

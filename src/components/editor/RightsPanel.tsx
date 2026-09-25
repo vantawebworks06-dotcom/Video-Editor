@@ -1,6 +1,7 @@
 "use client";
 
-import { Button, RightsBadge, Tag } from "@/components/ui";
+import { Button, RightsBadge, Tag, Thumb } from "@/components/ui";
+import { stillThumbnail } from "@/lib/media/thumbnails";
 import type { RightsStatus } from "@/lib/domain/types";
 import type { Clip } from "./types";
 
@@ -43,7 +44,9 @@ export function RightsPanel({ clips, allowReview, allowApprovedUnknown, onSelect
               {sorted.map((c) => (
                 <tr key={c.rowId} className="cursor-pointer hover:bg-panel-2" onClick={() => onSelect(c)}>
                   <td className="w-16 p-2">
-                    <div className="h-9 w-14 rounded bg-black bg-cover bg-center" style={{ backgroundImage: c.asset.thumbnailUrl ? `url(${c.asset.thumbnailUrl})` : undefined }} />
+                    <div className="relative h-9 w-14 overflow-hidden rounded bg-black">
+                      <Thumb src={c.asset.thumbnailUrl && stillThumbnail(c.asset.thumbnailUrl)} />
+                    </div>
                   </td>
                   <td className="p-2">
                     <div className="line-clamp-1 font-medium">{c.asset.title}</div>

@@ -12,7 +12,6 @@ export interface Clip {
   needDescription: string;
   queries: string[];
   asset: NormalizedAsset;
-  alternates: NormalizedAsset[];
   scores: Record<string, number> | null;
   overall: number | null;
   reason: string;
@@ -64,7 +63,6 @@ export interface StatusData {
     timelineVersion: number;
     hasNarration: boolean;
     hasScript: boolean;
-    script: string | null;
     hasReference: boolean;
     hasMusic: boolean;
     narrationDuration: number | null;
@@ -74,6 +72,8 @@ export interface StatusData {
   pipelineJob: JobInfo | null;
   renderJob: JobInfo | null;
   latestExport: { id: string; format: string; url: string | null; downloadUrl: string | null; local: boolean; size_bytes: number | null; duration: number | null; attributions: string[]; created_at: string } | null;
+  narrationPath: string | null;
+  /** null while the editor already holds a valid signed URL for `narrationPath` (see the status route). */
   narrationUrl: string | null;
   usage: { calls: number; cached_calls: number; input_tokens: number; output_tokens: number; cost_usd: number };
 }

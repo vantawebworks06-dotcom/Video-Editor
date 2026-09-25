@@ -18,19 +18,25 @@ export interface AuthedContext {
   userId: string;
 }
 
-/** Resolve the signed-in user (RLS-scoped client) or throw 401. */
+/**
+ * Resolve the signed-in user (RLS-scoped client) or throw 401. getClaims() verifies the session
+ * JWT's signature locally against the project's cached signing keys, where getUser() made a
+ * round trip to Supabase Auth on every API request. RLS still enforces access on every query.
+ */
 export async function requireUser(): Promise<AuthedContext> {
   const supabase = await createClient();
-  const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) throw new HttpError(401, "Please sign in.");
-  return { supabase, userId: data.user.id };
+  const { data, error } = await supabase.auth.getClaims();
+  const userId = data?.claims?.sub;
+  if (error || !userId) throw new HttpError(401, "Please sign in.");
+  return { supabase, userId };
 }
 
-export async function requireProject(ctx: AuthedContext, projectId: string) {
+/** `columns` narrows the row for hot paths (the full row includes the transcript, often 100s of KB). */
+export async function requireProject(ctx: AuthedContext, projectId: string, columns = "*") {
   if (!z.uuid().safeParse(projectId).success) throw new HttpError(404, "Project not found");
-  const { data } = await ctx.supabase.from("projects").select("*").eq("id", projectId).maybeSingle();
+  const { data } = await ctx.supabase.from("projects").select(columns).eq("id", projectId).maybeSingle();
   if (!data) throw new HttpError(404, "Project not found");
-  return data as Record<string, unknown> & { id: string; user_id: string; name: string; settings: unknown; is_demo: boolean };
+  return data as unknown as Record<string, unknown> & { id: string; user_id: string; name: string; settings: unknown; is_demo: boolean };
 }
 
 export async function parseBody<S extends z.ZodType>(req: Request, schema: S): Promise<z.infer<S>> {

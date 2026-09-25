@@ -3,6 +3,7 @@ import { MemorySearchCache, stableHash, type SearchCache } from "./cache";
 import { giphy, getProvider, ProviderError } from "./providers";
 import { orientationOf } from "./providers/base";
 import type { Orientation, ProviderCredentials, SearchParams, SearchResult } from "./providers/types";
+import { createLimiter } from "@/lib/limiter";
 import { looksAiGenerated, RIGHTS_RANK } from "./rights";
 
 export interface SearchRequest {
@@ -63,6 +64,33 @@ async function withConcurrency<T>(items: (() => Promise<T>)[], limit: number): P
   });
   await Promise.all(workers);
   return results;
+}
+
+// At most this many requests in flight per provider across the whole process, so concurrent
+// searches (the generator searches several visuals at once) can't burst a provider's rate limit.
+const PER_PROVIDER = 4;
+const providerSlots = new Map<ProviderId, ReturnType<typeof createLimiter>>();
+const slot = (p: ProviderId) => providerSlots.get(p) ?? providerSlots.set(p, createLimiter(PER_PROVIDER)).get(p)!;
+
+// Identical searches running at the same time share one provider request.
+const inFlight = new Map<string, Promise<SearchResult>>();
+
+/** Temporary failures worth another try; bad keys and bad requests are not. */
+function isTransient(err: unknown) {
+  if (!(err instanceof ProviderError)) return false;
+  return err.code === "RATE_LIMITED" || err.code === "TIMEOUT" || err.code === "NETWORK" || (err.code === "BAD_RESPONSE" && /HTTP 5\d\d/.test(err.message));
+}
+
+async function runWithRetry(provider: ProviderId, type: AssetType, params: SearchParams, creds: ProviderCredentials, attempts = 3): Promise<SearchResult> {
+  for (let i = 0; ; i++) {
+    try {
+      return await slot(provider)(() => runOne(provider, type, params, creds));
+    } catch (err) {
+      if (i >= attempts - 1 || !isTransient(err)) throw err;
+      const retryAfter = err instanceof ProviderError && err.retryAfterSeconds ? err.retryAfterSeconds * 1000 : 0;
+      await new Promise((r) => setTimeout(r, Math.min(10_000, retryAfter || 800 * 2 ** i)));
+    }
+  }
 }
 
 async function runOne(
@@ -165,9 +193,17 @@ export async function searchMedia(
             return { assets: hit.results, queryIndex };
           }
           try {
-            providerCalls++;
-            const r = await runOne(provider, type, params, ctx.creds);
-            await cache.set(key, { provider, query, results: r.assets, timestamp: Date.now() }).catch(() => undefined);
+            let pending = inFlight.get(key);
+            if (!pending) {
+              providerCalls++;
+              pending = runWithRetry(provider, type, params, ctx.creds).then(async (r) => {
+                await cache.set(key, { provider, query, results: r.assets, timestamp: Date.now() }).catch(() => undefined);
+                return r;
+              });
+              inFlight.set(key, pending);
+              void pending.finally(() => inFlight.delete(key)).catch(() => undefined);
+            } else cacheHits++;
+            const r = await pending;
             return { assets: r.assets, queryIndex };
           } catch (err) {
             errors.push({

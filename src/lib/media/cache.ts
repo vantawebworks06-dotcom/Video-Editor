@@ -17,6 +17,16 @@ export interface SearchCache {
 }
 
 export const SEARCH_CACHE_TTL_MS = Number(process.env.SEARCH_CACHE_TTL_HOURS ?? 24) * 3600_000;
+/**
+ * Archive search results (Wikimedia Commons, Internet Archive) change rarely, and Internet
+ * Archive is the slowest provider by far (~1–3 s per search), so they are kept for 7 days — the
+ * worker's cleanup window. Stock providers keep 24 h (Pixabay's API terms cap caching at 24 h).
+ */
+const ARCHIVE_CACHE_TTL_MS = 7 * 24 * 3600_000;
+
+export function searchCacheTtlMs(provider: string): number {
+  return provider === "wikimedia" || provider === "internet_archive" ? Math.max(ARCHIVE_CACHE_TTL_MS, SEARCH_CACHE_TTL_MS) : SEARCH_CACHE_TTL_MS;
+}
 
 export function stableHash(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
@@ -36,7 +46,7 @@ export class MemorySearchCache implements SearchCache {
   private map = new Map<string, CachedSearch>();
   async get(key: string) {
     const hit = this.map.get(key);
-    return hit && Date.now() - hit.timestamp < SEARCH_CACHE_TTL_MS ? hit : null;
+    return hit && Date.now() - hit.timestamp < searchCacheTtlMs(hit.provider) ? hit : null;
   }
   async set(key: string, value: CachedSearch) {
     this.map.set(key, value);
@@ -51,7 +61,7 @@ export class FileSearchCache implements SearchCache {
   async get(key: string) {
     try {
       const hit = JSON.parse(await readFile(this.file(key), "utf8")) as CachedSearch;
-      return Date.now() - hit.timestamp < SEARCH_CACHE_TTL_MS ? hit : null;
+      return Date.now() - hit.timestamp < searchCacheTtlMs(hit.provider) ? hit : null;
     } catch {
       return null;
     }
