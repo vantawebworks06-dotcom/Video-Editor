@@ -13,7 +13,9 @@ import path from "node:path";
 import { makeClaude, makeDirector, parseSettings, resolveStyle } from "@/lib/data/project";
 import { type LoadedEdit, loadEdit, saveGeneration, SupabaseSearchCache } from "@/lib/data/store";
 import { DEMO_SCRIPT } from "@/lib/demo/script";
-import { type OutputFormat, type ProjectSettings, Transcript, type AssetRef } from "@/lib/domain/types";
+import { OutputFormat, type ProjectSettings, Transcript, type AssetRef } from "@/lib/domain/types";
+import { applyOriginalFootage, narrationFootageAsset } from "@/lib/pipeline/originalFootage";
+import { transcribeLocally } from "@/lib/transcription/local";
 import { stableHash } from "@/lib/media/cache";
 import { LocalLibraryMusicProvider } from "@/lib/media/music";
 import { looksAiGenerated } from "@/lib/media/rights";
@@ -94,25 +96,46 @@ async function loadProject(id: string): Promise<ProjectRow> {
   return data as ProjectRow;
 }
 
-/** Local, validated narration audio (48 kHz mono WAV). */
-async function narrationAudio(p: ProjectRow): Promise<{ path: string; duration: number }> {
+interface NarrationInfo {
+  path: string; // extracted narration audio (original channels, 48 kHz PCM) — the edit's backbone
+  duration: number;
+  /** The uploaded file itself, when it is a video (for "mix" mode). */
+  video: { storagePath: string; width: number | null; height: number | null } | null;
+}
+
+/** Validate the upload and extract its narration audio untouched (no trimming, no re-timing). */
+async function narrationAudio(p: ProjectRow): Promise<NarrationInfo> {
   if (p.is_demo && !p.narration_path) {
     if (!existsSync(library.demoNarration)) throw new Error("Demo narration missing: run `npm run assets:generate` on the worker machine.");
     const info = await probe(library.demoNarration);
-    return { path: library.demoNarration, duration: info.duration ?? 0 };
+    return { path: library.demoNarration, duration: info.duration ?? 0, video: null };
   }
   if (!p.narration_path) throw new Error("Upload a narration (audio or video) first.");
   const src = await downloadObject(p.narration_path);
   const info = await probe(src).catch(() => null);
-  if (!info?.hasAudio) throw new Error("The narration file has no decodable audio stream.");
+  if (!info) throw new Error("The uploaded file could not be read — it may be corrupt or an unsupported codec.");
+  if (!info.hasAudio) throw new Error("The uploaded file has no audio track, so there is no narration to edit around.");
   if (!info.duration || info.duration < 2) throw new Error("The narration is too short.");
   if (info.duration > MAX_NARRATION_SECONDS) throw new Error("The narration is longer than 60 minutes.");
   const wav = `${src}.voice.wav`;
-  if (!existsSync(wav)) await runFfmpeg(["-i", src, "-vn", "-ac", "1", "-ar", "48000", "-c:a", "pcm_s16le", wav]);
-  return { path: wav, duration: info.duration };
+  if (!existsSync(wav)) await runFfmpeg(["-i", src, "-vn", "-map", "0:a:0", "-ar", "48000", "-c:a", "pcm_s16le", wav]);
+  return {
+    path: wav,
+    duration: info.duration,
+    video: info.hasVideo ? { storagePath: p.narration_path, width: info.width, height: info.height } : null,
+  };
 }
 
-async function ensureTranscript(p: ProjectRow, audio: { path: string; duration: number }, creds: { openai?: string }): Promise<Transcript> {
+/**
+ * Transcript with word timestamps, cached on the project. Order: saved transcript →
+ * user-supplied script (advanced option) → OpenAI Whisper API if a key exists → local Whisper (free).
+ */
+async function ensureTranscript(
+  p: ProjectRow,
+  audio: { path: string; duration: number },
+  creds: { openai?: string },
+  onProgress?: (fraction: number) => void,
+): Promise<Transcript> {
   const existing = Transcript.safeParse(p.transcript);
   if (existing.success && Math.abs(existing.data.duration - audio.duration) < 0.5) return existing.data;
 
@@ -120,12 +143,12 @@ async function ensureTranscript(p: ProjectRow, audio: { path: string; duration: 
   let transcript: Transcript;
   if (script?.trim()) {
     transcript = alignScriptToAudio(script, audio.duration, await detectSilences(audio.path));
-  } else if (creds.openai) {
+  } else if (creds.openai && process.env.TRANSCRIPTION_PROVIDER !== "local") {
     const mp3 = `${audio.path}.stt.mp3`;
     if (!existsSync(mp3)) await runFfmpeg(["-i", audio.path, "-ac", "1", "-ar", "16000", "-b:a", "48k", mp3]);
     transcript = await transcribeWithWhisper(mp3, creds.openai, audio.duration);
   } else {
-    throw new Error("No transcript: add the script to the project, or configure OPENAI_API_KEY for automatic transcription.");
+    transcript = await transcribeLocally(audio.path, audio.duration, onProgress);
   }
   await db.from("projects").update({ transcript, narration_duration: audio.duration }).eq("id", p.id);
   return transcript;
@@ -147,9 +170,20 @@ interface JobRow {
 async function runPipelineJob(job: JobRow) {
   const update = (fields: Record<string, unknown>) =>
     db.from("pipeline_jobs").update({ ...fields, heartbeat_at: new Date().toISOString() }).eq("id", job.id);
-  const progress = throttle(async (stage: string, p: number) => {
-    await update({ current_stage: stage, progress: Math.min(1, Math.max(0, p)) });
-  }, 1000);
+  // p < 0 → update the stage label only (keep the current percentage). A new stage
+  // ("Searching for footage" → "Adding reactions") is always reported; repeats are throttled.
+  const send = async (stage: string, p: number) => {
+    await update(p < 0 ? { current_stage: stage } : { current_stage: stage, progress: Math.min(1, Math.max(0, p)) }).then(undefined, () => undefined);
+  };
+  const throttled = throttle(send, 700);
+  let lastStage = "";
+  const progress = async (stage: string, p: number) => {
+    const kind = stage.split("…")[0]!;
+    if (kind !== lastStage) {
+      lastStage = kind;
+      await send(stage, p);
+    } else await throttled(stage, p);
+  };
 
   const project = await loadProject(job.project_id);
   const settings = parseSettings(project.settings);
@@ -173,9 +207,10 @@ async function runPipelineJob(job: JobRow) {
   }
 
   await db.from("projects").update({ status: "processing", last_error: null }).eq("id", project.id);
-  await progress("Preparing narration", 0.02);
+  await progress("Analyzing narration…", 0.02);
   const audio = await narrationAudio(project);
-  const transcript = await ensureTranscript(project, audio, creds);
+  await progress("Transcribing…", 0.04);
+  const transcript = await ensureTranscript(project, audio, creds, (f) => void progress(`Transcribing… ${Math.round(f * 100)}%`, 0.04 + f * 0.21));
   const style = await resolveStyle(db, project.style_profile_id, settings);
   const director = makeDirector(claude, settings);
   const orientation = "landscape" as const;
@@ -191,11 +226,20 @@ async function runPipelineJob(job: JobRow) {
 
   const result = await generateEdit(
     { projectTitle: project.name, transcript, settings, style, orientation, onlySceneIds, existing },
-    { director, creds, searchCache: new SupabaseSearchCache(db), onProgress: (s, p) => progress(s, p), log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`) },
+    { director, creds, searchCache: new SupabaseSearchCache(db), onProgress: (s, p) => progress(s, p < 0 ? p : 0.25 + p * 0.72), log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`) },
   );
-  await progress("Saving timeline", 0.97);
+  if (settings.originalFootage === "mix" && audio.video) {
+    applyOriginalFootage(result.selections, result.plans, narrationFootageAsset(audio.video.storagePath, { ...audio.video, duration: audio.duration }), onlySceneIds);
+  }
+  await progress("Building timeline…", 0.98);
   await saveGeneration(db, { userId: project.user_id, projectId: project.id }, result, onlySceneIds);
   await db.from("projects").update({ status: "ready", timeline_version: project.timeline_version + 1 }).eq("id", project.id);
+
+  // Auto-Edit: optionally queue a preview render as soon as the timeline is ready.
+  const autoRender = OutputFormat.safeParse(job.payload?.autoRender);
+  if (autoRender.success) {
+    await db.from("render_jobs").insert({ project_id: project.id, user_id: project.user_id, format: autoRender.data, timeline_version: project.timeline_version + 1 });
+  }
 
   const errorSummary: Record<string, number> = {};
   for (const e of result.searchErrors) errorSummary[`${e.provider}:${e.code}`] = (errorSummary[`${e.provider}:${e.code}`] ?? 0) + 1;
@@ -250,7 +294,7 @@ async function runRenderJob(job: JobRow) {
   const edit = await loadEdit(db, project.id);
   if (!edit.selections.length) throw new Error("Nothing to render — generate the edit first.");
   const audio = await narrationAudio(project);
-  const transcript = await ensureTranscript(project, audio, await resolveCredentials(project.user_id));
+  const transcript = await ensureTranscript(project, audio, await resolveCredentials(project.user_id), (f) => void stageUpdate("DOWNLOADING", 0, `Transcribing… ${Math.round(f * 100)}%`));
   const selections = renderableSelections(edit.selections, settings, (m) => warnings.push(m));
   if (!selections.length) throw new Error("Every visual was removed by the rights gate. Review assets in the Rights panel.");
 
@@ -267,7 +311,8 @@ async function runRenderJob(job: JobRow) {
     draft: format === "draft",
     resolveLocal: async (ref: AssetRef) => {
       if (!ref.assetId.startsWith("uploaded:")) return null;
-      return downloadObject(ref.assetId.slice("uploaded:".length));
+      // "uploaded:narration:<path>" = the narration video itself; "uploaded:<path>" = other uploads.
+      return downloadObject(ref.assetId.slice("uploaded:".length).replace(/^narration:/, ""));
     },
     onStage: (s, p, m) => stageUpdate(s, p, m),
     log: (m) => log(`[render ${job.id.slice(0, 8)}] ${m}`),

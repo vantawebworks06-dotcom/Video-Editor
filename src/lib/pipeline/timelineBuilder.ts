@@ -12,6 +12,7 @@ import {
   type VisualClip,
 } from "@/lib/domain/types";
 import type { SceneSelection } from "./generate";
+import { NARRATION_ASSET_PREFIX } from "./originalFootage";
 
 export const TEXT_FONT = "Anton";
 export const CAPTION_FONT = "Inter";
@@ -72,7 +73,8 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
       duration: round(end - start),
       asset: toAssetRef(s.asset),
       alternates: s.alternates.filter((a) => a.type === s.asset.type || s.role === "primary").slice(0, 3).map(toAssetRef),
-      trimStart: s.trimStart,
+      // The speaker's own footage always plays in sync with the narration.
+      trimStart: s.asset.id.startsWith(NARRATION_ASSET_PREFIX) ? round(start) : s.trimStart,
       layout: s.layout,
       motion: { type: s.motion, intensity: s.motionIntensity },
       treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite },

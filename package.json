@@ -18,10 +18,12 @@
     "demo": "tsx --env-file-if-exists=.env.local scripts/demo.ts",
     "test:providers": "tsx --env-file-if-exists=.env.local scripts/test-providers.ts",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "tsx --env-file-if-exists=.env.local scripts/e2e.ts"
+    "test:e2e": "tsx --env-file-if-exists=.env.local scripts/e2e.ts",
+    "test:autoedit": "tsx --env-file-if-exists=.env.local scripts/e2e-autoedit.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
+    "@huggingface/transformers": "^4.3.0",
     "@supabase/ssr": "^0.12.7",
     "@supabase/supabase-js": "^2.117.1",
     "ffmpeg-static": "^5.3.0",

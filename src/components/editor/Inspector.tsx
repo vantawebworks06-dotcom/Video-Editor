@@ -239,6 +239,21 @@ export function Inspector({
                 <Field k="Info density" v={plan.intensity.informationDensity.toFixed(2)} />
                 <Field k="Emotional" v={plan.intensity.emotionalIntensity.toFixed(2)} />
                 <Field k="Meme moment" v={`${plan.meme.insert ? "yes" : "no"} — ${plan.meme.reason}`} />
+                {plan.analysis && (
+                  <>
+                    <Field k="Topic" v={plan.analysis.topic} />
+                    {plan.analysis.people.length > 0 && <Field k="People" v={plan.analysis.people.join(", ")} />}
+                    {plan.analysis.locations.length > 0 && <Field k="Locations" v={plan.analysis.locations.join(", ")} />}
+                    {plan.analysis.events.length > 0 && <Field k="Events" v={plan.analysis.events.join(", ")} />}
+                    {plan.analysis.objects.length > 0 && <Field k="Objects" v={plan.analysis.objects.join(", ")} />}
+                    {plan.analysis.era && <Field k="Era" v={plan.analysis.era} />}
+                    <Field k="Tone" v={plan.analysis.tone} />
+                    <Field
+                      k="Useful visuals"
+                      v={[plan.analysis.archivalUseful && "archival", plan.analysis.photoUseful && "photos", plan.analysis.screenshotUseful && "articles/screenshots", plan.analysis.memeAppropriate && "reaction"].filter(Boolean).join(", ") || "video B-roll"}
+                    />
+                  </>
+                )}
                 <div className="flex flex-wrap gap-2 pt-2">
                   <Button size="sm" disabled={busy} onClick={() => onRegenerateScene(plan.sceneId)}>
                     Regenerate Scene

@@ -64,6 +64,18 @@ See `.env.example` for the full list with instructions.
 
 Keys can also be entered per user in **Settings → API Connections** (stored AES-256-GCM encrypted; never returned to the browser). Saved keys override environment variables.
 
+## Auto-Edit My Video
+
+The main workflow: **Projects → Auto-Edit My Video** → drop ONE video (MP4/MOV/WebM) containing your narration → choose style, meme frequency, captions and whether to replace your picture or cut back to you ("mix") → the worker runs:
+
+Analyzing narration (validate, extract audio untouched) → Transcribing (local Whisper, word timestamps — no transcript or API key needed) → Understanding scenes (topic, people, places, events, era, tone, useful visual types) → Searching for footage (Pexels, Pixabay, Wikimedia, Internet Archive, GIPHY) → Selecting visuals (ranked; rights-filtered; AI-generated media excluded) → Adding reactions (only where the narration earns one; threshold + cooldown) → Adding effects → Building timeline → automatic draft render.
+
+Then **Review scenes** shows every visual with its narration, duration, source/licence and effect, with Replace / Find Better / Regenerate / Remove / Change Effect — each touching only that clip or scene. Render the final 1920×1080 (or 1080×1920) when happy. The narration is the backbone: it is never cut, re-timed or replaced; in "mix" mode your own footage plays frame-synced to it.
+
+Transcription order: saved transcript → your script (optional, advanced: Project tab) → OpenAI Whisper API if `OPENAI_API_KEY` is set → **local Whisper** (default; model `Xenova/whisper-base.en`, ~150 MB downloaded once to `.cache/models`; override with `WHISPER_MODEL`, force local with `TRANSCRIPTION_PROVIDER=local`).
+
+Renders larger than the Storage plan's upload limit (50 MB on the free plan) are kept on the worker and served from there when the website runs on the same computer.
+
 ## Using it
 
 1. **Projects → Try the demo project** (fictional script + generated TTS narration), or create a project.
@@ -73,7 +85,7 @@ Keys can also be entered per user in **Settings → API Connections** (stored AE
 5. **Render** (Draft 960×540, YouTube 1920×1080, Shorts 1080×1920). Each clip renders to a cached segment, so edits re-render only the changed clips. **Export MP4** downloads the result.
 6. **Asset Rights** lists every visual's source and licence, whether it will render, and ready-to-paste credits.
 
-CLI demo without the database: `npm run demo -- --draft` (writes `output/demo-draft.mp4`), `npm run demo` (1080p), `npm run demo -- --vertical`. Provider/Claude connectivity: `npm run test:providers`. Full end-to-end check (needs the app on BASE_URL, default http://localhost:3100, and a running worker; creates and deletes a throwaway user): `npm run test:e2e`.
+CLI demo without the database: `npm run demo -- --draft` (writes `output/demo-draft.mp4`), `npm run demo` (1080p), `npm run demo -- --vertical`. Provider/Claude connectivity: `npm run test:providers`. Full end-to-end check (needs the app on BASE_URL, default http://localhost:3100, and a running worker; creates and deletes a throwaway user): `npm run test:e2e`. Auto-Edit end-to-end check with your own narration video: `npm run test:autoedit -- path/to/video.mp4`.
 
 ## Media rights
 

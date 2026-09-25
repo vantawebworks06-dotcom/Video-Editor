@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requireProject, requireUser, route } from "@/lib/api/server";
 import { parseSettings } from "@/lib/data/project";
+import { localRenderSize } from "@/lib/render/localRenders";
 import { BUCKET } from "@/lib/supabase/admin";
 
 /** Polled by the editor: project state, latest jobs, latest export and AI usage. */
@@ -14,11 +15,20 @@ export const GET = route(async (_req: NextRequest, ctx: RouteContext<"/api/proje
     auth.supabase.from("project_ai_usage").select("calls, cached_calls, input_tokens, output_tokens, cost_usd").eq("project_id", p.id).maybeSingle(),
   ]);
 
-  const latestExport = exp.data?.[0] ?? null;
-  let exportUrl: string | null = null;
-  if (latestExport) {
-    const { data } = await auth.supabase.storage.from(BUCKET).createSignedUrl(latestExport.storage_path, 3600);
-    exportUrl = data?.signedUrl ?? null;
+  let latestExport: Record<string, unknown> | null = null;
+  const stored = exp.data?.[0] ?? null;
+  if (stored) {
+    const { data } = await auth.supabase.storage.from(BUCKET).createSignedUrl(stored.storage_path, 3600);
+    latestExport = { ...stored, url: data?.signedUrl ?? null, downloadUrl: data?.signedUrl ?? null, local: false };
+  }
+  // A newer render too large for the Storage plan is served from the worker's disk (local setups).
+  const rjLatest = render.data?.[0];
+  if (rjLatest?.status === "COMPLETE" && (!stored || new Date(rjLatest.created_at) > new Date(stored.created_at))) {
+    const size = localRenderSize(rjLatest.id);
+    if (size) {
+      const url = `/api/renders/${rjLatest.id}/file`;
+      latestExport = { id: rjLatest.id, format: rjLatest.format, size_bytes: size, duration: null, attributions: [], created_at: rjLatest.completed_at ?? rjLatest.created_at, url, downloadUrl: `${url}?download=1`, local: true };
+    }
   }
   let narrationUrl: string | null = null;
   if (typeof p.narration_path === "string") {
@@ -45,7 +55,7 @@ export const GET = route(async (_req: NextRequest, ctx: RouteContext<"/api/proje
     },
     pipelineJob: pipeline.data?.[0] ?? null,
     renderJob: render.data?.[0] ?? null,
-    latestExport: latestExport ? { ...latestExport, url: exportUrl } : null,
+    latestExport,
     narrationUrl,
     usage: usage.data ?? { calls: 0, cached_calls: 0, input_tokens: 0, output_tokens: 0, cost_usd: 0 },
   });

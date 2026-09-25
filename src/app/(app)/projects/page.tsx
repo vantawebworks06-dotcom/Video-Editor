@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AutoEditPanel } from "@/components/AutoEditPanel";
 import { api, Button, Input, Label, Panel, Select, Tag } from "@/components/ui";
 import { STYLE_PRESETS } from "@/lib/domain/presets";
 
@@ -63,6 +64,8 @@ export default function ProjectsPage() {
           ▶ Try the demo project
         </Button>
       </div>
+
+      <AutoEditPanel />
 
       {error && <p className="rounded-md border border-danger/30 bg-danger/10 p-3 text-sm text-danger">{error}</p>}
 

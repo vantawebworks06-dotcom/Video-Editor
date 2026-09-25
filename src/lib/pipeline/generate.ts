@@ -95,7 +95,7 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
   let plans: ScenePlan[];
   if (input.onlySceneIds && input.existing) {
     const targets = input.existing.plans.filter((p) => input.onlySceneIds!.has(p.sceneId));
-    await deps.onProgress?.("Re-planning selected scenes", 0.1);
+    await deps.onProgress?.("Understanding scenes…", 0.1);
     const segments: SceneSegment[] = targets.map((p) => ({
       sceneId: p.sceneId,
       startTime: p.startTime,
@@ -108,12 +108,12 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
     const replanned = await director.planScenes(segments, ctx);
     plans = input.existing.plans.map((p) => replanned.find((r) => r.sceneId === p.sceneId) ?? p);
   } else {
-    await deps.onProgress?.("Analysing narration", 0.05);
+    await deps.onProgress?.("Understanding scenes…", 0.05);
     const sentences = sentencesFromWords(input.transcript.words);
     if (!sentences.length) throw new Error("The transcript has no words to edit.");
     const segments = await director.segmentScenes(input.transcript, sentences, ctx);
     log(`segmented into ${segments.length} scenes`);
-    await deps.onProgress?.("Planning scenes", 0.15);
+    await deps.onProgress?.("Understanding scenes…", 0.15);
     plans = await director.planScenes(segments, ctx);
   }
 
@@ -135,7 +135,7 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
       scenesSinceMeme = keptHere.some((s) => s.role === "meme") ? 0 : scenesSinceMeme + 1;
       continue;
     }
-    await deps.onProgress?.(`Finding media for ${plan.sceneId}`, 0.2 + 0.6 * (pi / Math.max(1, plans.length)));
+    await deps.onProgress?.(`Searching for footage… (scene ${pi + 1}/${plans.length})`, 0.2 + 0.6 * (pi / Math.max(1, plans.length)));
 
     let cursor = plan.startTime;
     const sceneSelections: SceneSelection[] = [];
@@ -169,6 +169,7 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
       } else if (!input.settings.allowReviewAssets) {
         warnings.push(`${plan.sceneId}: meme moment found but review-required assets (GIPHY) are not allowed in auto edits.`);
       } else {
+        await deps.onProgress?.(`Adding reactions… (${plan.sceneId})`, 0.2 + 0.6 * ((pi + 0.9) / Math.max(1, plans.length)));
         const meme = await insertMeme(plan, sceneSelections, deps, input.settings, searchErrors, used);
         if (meme) {
           memeAdded = true;
@@ -182,7 +183,7 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
   }
 
   // 6. Per-clip layout/motion/annotation decisions.
-  await deps.onProgress?.("Designing shots", 0.85);
+  await deps.onProgress?.("Adding effects…", 0.85);
   const toRefine = selections.filter((s) => s.role === "primary" && (!input.onlySceneIds || input.onlySceneIds.has(s.sceneId)));
   for (let i = 0; i < toRefine.length; i += 20) {
     const chunk = toRefine.slice(i, i + 20);
@@ -211,7 +212,7 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
     }
   }
 
-  await deps.onProgress?.("Plan complete", 0.95);
+  await deps.onProgress?.("Building timeline…", 0.95);
   return { plans, selections, warnings, searchErrors };
 }
 
@@ -258,6 +259,7 @@ async function selectForNeed(
   }
   if (!candidates.length) return null;
 
+  await deps.onProgress?.(`Selecting visuals… (${clipId})`, -1);
   const ranked = await deps.director.rankCandidates(
     { narration: plan.narration, strategy: plan.visualStrategy, need, candidates, recentKinds: recent, usedAssetIds: used },
     ctx,

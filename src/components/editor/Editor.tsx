@@ -5,6 +5,7 @@ import { api, Button, cx, fmtTime, Progress, Select, Tag } from "@/components/ui
 import { MUSIC_TRACKS } from "@/lib/render/libraryTracks";
 import { Inspector } from "./Inspector";
 import { ReplaceDialog } from "./ReplaceDialog";
+import { ReviewPanel } from "./ReviewPanel";
 import { RightsPanel } from "./RightsPanel";
 import { SetupPanel } from "./SetupPanel";
 import { Timeline } from "./Timeline";
@@ -21,7 +22,8 @@ export function Editor({ projectId }: { projectId: string }) {
   const [selectedClip, setSelectedClip] = useState<string | null>(null);
   const [selectedScene, setSelectedScene] = useState<string | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
-  const [replacing, setReplacing] = useState<Clip | null>(null);
+  const [replacing, setReplacing] = useState<{ clip: Clip; tab: "ai" | "search" } | null>(null);
+  const [centerTab, setCenterTab] = useState<"preview" | "review">("preview");
   const [showRights, setShowRights] = useState(false);
   const [format, setFormat] = useState<"landscape" | "vertical" | "draft">("draft");
   const [playhead, setPlayhead] = useState(0);
@@ -130,7 +132,7 @@ export function Editor({ projectId }: { projectId: string }) {
           Asset Rights
         </Button>
         {status.latestExport?.url && (
-          <a href={status.latestExport.url} download className="text-sm text-accent hover:underline">
+          <a href={status.latestExport.downloadUrl ?? status.latestExport.url} download className="text-sm text-accent hover:underline">
             Export MP4 ↓
           </a>
         )}
@@ -227,9 +229,37 @@ export function Editor({ projectId }: { projectId: string }) {
           </div>
         </aside>
 
-        {/* CENTER: preview */}
-        <section className="flex min-h-0 flex-col items-center justify-center bg-black p-4">
-          {status.latestExport?.url ? (
+        {/* CENTER: preview / scene review */}
+        <section className="flex min-h-0 flex-col">
+          <div className="flex items-center gap-1 border-b border-line bg-panel px-2">
+            {(["preview", "review"] as const).map((t) => (
+              <button key={t} onClick={() => setCenterTab(t)} className={cx("px-3 py-2 text-xs", centerTab === t ? "border-b-2 border-accent text-foreground" : "text-muted hover:text-foreground")}>
+                {t === "preview" ? "Preview" : `Review scenes${edit?.clips.length ? ` (${edit.clips.length})` : ""}`}
+              </button>
+            ))}
+          </div>
+          {centerTab === "review" && edit && hasEdit ? (
+            <div className="min-h-0 flex-1 bg-background">
+              <ReviewPanel
+                projectId={projectId}
+                data={edit}
+                selectedClip={selectedClip}
+                onSelect={(c) => {
+                  setSelectedClip(c.clipId);
+                  setSelectedScene(c.sceneId);
+                }}
+                onReplace={(c, tab) => setReplacing({ clip: c, tab })}
+                onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
+                onChanged={() => void refresh()}
+              />
+            </div>
+          ) : (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-black p-4">
+          {pj && ACTIVE.includes(pj.status) && pj.kind !== "analyze_reference" ? (
+            <AutoEditProgress stage={pj.current_stage ?? "Queued…"} progress={Number(pj.progress)} queued={pj.status === "QUEUED"} />
+          ) : rj && ACTIVE.includes(rj.status) && !status.latestExport ? (
+            <AutoEditProgress stage={rj.status === "FINALIZING" ? "Finalizing…" : `Rendering… ${rj.current_stage ?? ""}`} progress={Number(rj.progress)} queued={rj.status === "QUEUED"} />
+          ) : status.latestExport?.url ? (
             <>
               <video
                 ref={videoRef}
@@ -250,6 +280,8 @@ export function Editor({ projectId }: { projectId: string }) {
               <p>{hasEdit ? "Render a Draft preview to see the edit. Only clips you change are re-rendered next time." : "Generate the edit first."}</p>
             </div>
           )}
+        </div>
+          )}
         </section>
 
         {/* RIGHT: inspector */}
@@ -261,7 +293,7 @@ export function Editor({ projectId }: { projectId: string }) {
             settings={p.settings}
             hasMusicUpload={p.hasMusic}
             onChanged={() => void refresh()}
-            onReplace={(c) => setReplacing(c)}
+            onReplace={(c) => setReplacing({ clip: c, tab: "ai" })}
             onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
           />
         </aside>
@@ -298,7 +330,8 @@ export function Editor({ projectId }: { projectId: string }) {
       {replacing && (
         <ReplaceDialog
           projectId={projectId}
-          clip={replacing}
+          clip={replacing.clip}
+          initialTab={replacing.tab}
           onClose={() => setReplacing(null)}
           onReplaced={() => {
             setReplacing(null);
@@ -319,6 +352,39 @@ export function Editor({ projectId }: { projectId: string }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+const STEPS = [
+  "Uploading",
+  "Analyzing narration",
+  "Transcribing",
+  "Understanding scenes",
+  "Searching for footage",
+  "Selecting visuals",
+  "Adding reactions",
+  "Adding effects",
+  "Building timeline",
+  "Rendering",
+  "Finalizing",
+];
+
+/** Step list for the automatic edit, highlighting the stage the worker reports. */
+function AutoEditProgress({ stage, progress, queued }: { stage: string; progress: number; queued: boolean }) {
+  const current = STEPS.findIndex((s) => stage.toLowerCase().startsWith(s.toLowerCase()));
+  return (
+    <div className="w-full max-w-md space-y-3 text-sm">
+      <div className="text-base font-semibold text-foreground">{queued ? "Waiting for the worker…" : stage}</div>
+      <Progress value={progress} />
+      <ol className="space-y-1 text-xs">
+        {STEPS.map((s, i) => (
+          <li key={s} className={i < current ? "text-ok" : i === current ? "text-accent" : "text-muted"}>
+            {i < current ? "✓" : i === current ? "●" : "○"} {s}…
+          </li>
+        ))}
+      </ol>
+      {queued && <p className="text-xs text-muted">Make sure `npm run worker` is running on your computer.</p>}
     </div>
   );
 }

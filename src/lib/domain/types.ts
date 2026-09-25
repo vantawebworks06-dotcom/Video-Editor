@@ -206,6 +206,22 @@ export const SceneIntensity = z.object({
 });
 export type SceneIntensity = z.infer<typeof SceneIntensity>;
 
+/** What a scene is about — drives visual needs and is shown in the editor. */
+export const SceneAnalysis = z.object({
+  topic: z.string(),
+  people: z.array(z.string()),
+  locations: z.array(z.string()),
+  events: z.array(z.string()),
+  objects: z.array(z.string()),
+  era: z.string().nullable(),
+  tone: z.enum(["neutral", "serious", "tense", "somber", "humorous", "uplifting", "dramatic"]),
+  archivalUseful: z.boolean(),
+  photoUseful: z.boolean(),
+  screenshotUseful: z.boolean(),
+  memeAppropriate: z.boolean(),
+});
+export type SceneAnalysis = z.infer<typeof SceneAnalysis>;
+
 export const ScenePlan = z.object({
   sceneId: z.string(),
   startTime: z.number(),
@@ -220,6 +236,7 @@ export const ScenePlan = z.object({
   motion: z.object({ type: MotionType, intensity: z.number() }),
   transition: Transition,
   sfx: z.array(SfxCue),
+  analysis: SceneAnalysis.optional(),
 });
 export type ScenePlan = z.infer<typeof ScenePlan>;
 
@@ -340,6 +357,8 @@ export const ProjectSettings = z.object({
   gifRating: z.enum(["g", "pg", "pg-13"]),
   /** Built-in royalty-safe bed key, "uploaded" (project music file) or "none". */
   musicTrack: z.string(),
+  /** Narration video: "replace" hides its picture; "mix" cuts back to the speaker (interview + B-roll). */
+  originalFootage: z.enum(["replace", "mix"]),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
@@ -363,6 +382,7 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   mix: DEFAULT_MIX,
   gifRating: "pg",
   musicTrack: "ambient_pad",
+  originalFootage: "replace",
 };
 
 export const StyleProfile = z.object({

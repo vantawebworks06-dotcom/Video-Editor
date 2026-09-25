@@ -146,7 +146,11 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
       "-t", timeline.duration.toFixed(3),
       "-c:v", "libx264",
       "-preset", opts.draft ? "ultrafast" : "medium",
-      "-crf", opts.draft ? "26" : "19",
+      "-crf", opts.draft ? "26" : "20",
+      // Cap the bitrate at YouTube's recommended level (8 Mbps for 1080p30) so files stay a
+      // sensible size; grain and constant motion otherwise balloon a CRF-only encode.
+      "-maxrate", opts.draft ? "2500k" : "8M",
+      "-bufsize", opts.draft ? "5M" : "16M",
       "-pix_fmt", "yuv420p",
       "-r", String(timeline.fps),
       ...(audio.label ? ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"] : []),

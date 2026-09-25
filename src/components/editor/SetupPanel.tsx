@@ -88,6 +88,13 @@ export function SetupPanel({ status, onChanged, onAnalyzeReference }: { status: 
           </Select>
           {p.styleProfileId && <p className="mt-1 text-[11px] text-accent">A custom/reference style profile is applied (see Styles).</p>}
         </div>
+        <div>
+          <Label hint="when the narration is a video">Your video&apos;s picture</Label>
+          <Select value={s.originalFootage} disabled={busy !== null} onChange={(e) => void save({ originalFootage: e.target.value as ProjectSettings["originalFootage"] })}>
+            <option value="replace">Replace with documentary visuals</option>
+            <option value="mix">Mix: cut back to the speaker</option>
+          </Select>
+        </div>
         <div className="grid grid-cols-2 gap-2">
           <div>
             <Label>Memes</Label>

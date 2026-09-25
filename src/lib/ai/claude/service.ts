@@ -93,6 +93,7 @@ Style profile: ${JSON.stringify(ctx.style)}
 Meme frequency setting: ${ctx.memeFrequency} (OFF means never insert).
 
 Plan each scene below. For each:
+- analysis: topic, people, locations, events, objects and historical era mentioned; emotional tone; and whether archival footage, photographs, article/screenshot visuals, or a meme/reaction would genuinely help.
 - visualStrategy (one of the allowed strategies).
 - visualNeeds: split the scene into shots whose durations add up to the scene duration and vary around the target pace (high information 2-3s, normal 3-5s, slow/emotional 5-8s). Types: video, photo, archival, screenshot, article (article/screenshot = newspaper or document scans), reaction. For each need give ranked queries: literal (what is named), conceptual (what it evokes) and a final "ranked" list (best first, 3-7 queries).
 - textOverlay: enabled only for a real key phrase, statistic, chapter title or dramatic line (sparingly). Uppercase short text.
@@ -266,5 +267,6 @@ export function toScenePlan(seg: SceneSegment, p: ScenePlanOutput): ScenePlan {
     motion: { type: p.motion.type, intensity: clamp(p.motion.intensity, 0, 0.3) },
     transition: p.transition,
     sfx: p.sfx.map((c) => ({ kind: c.kind, at: clamp(c.atSeconds, 0, dur), reason: c.reason })),
+    analysis: p.analysis,
   };
 }

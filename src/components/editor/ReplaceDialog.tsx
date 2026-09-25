@@ -26,8 +26,8 @@ function Chip({ on, children, onClick }: { on: boolean; children: React.ReactNod
   );
 }
 
-export function ReplaceDialog({ projectId, clip, onClose, onReplaced }: { projectId: string; clip: Clip; onClose: () => void; onReplaced: () => void }) {
-  const [tab, setTab] = useState<"ai" | "search">("ai");
+export function ReplaceDialog({ projectId, clip, initialTab = "ai", onClose, onReplaced }: { projectId: string; clip: Clip; initialTab?: "ai" | "search"; onClose: () => void; onReplaced: () => void }) {
+  const [tab, setTab] = useState<"ai" | "search">(initialTab);
   const [ai, setAi] = useState<{ candidates: Candidate[]; director: string; queries: string[]; errors: string[] } | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
   const [query, setQuery] = useState(clip.queries[0] ?? "");

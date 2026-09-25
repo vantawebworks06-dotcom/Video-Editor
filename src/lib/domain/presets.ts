@@ -61,7 +61,7 @@ export const STYLE_PRESETS: StylePreset[] = [
       visualDensity: "high",
       preferredStrategies: ["archival_collage", "mixed_media", "article_breakdown", "evidence_board", "meme_reaction", "interview"],
     },
-    defaultMemeFrequency: "MEDIUM",
+    defaultMemeFrequency: "LOW",
     defaultPaper: "white_paper",
   },
   {

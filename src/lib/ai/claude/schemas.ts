@@ -6,6 +6,7 @@ import {
   AnnotationKind,
   Layout,
   MotionType,
+  SceneAnalysis,
   SfxKind,
   StyleProfile,
   TextAnimation,
@@ -59,6 +60,7 @@ export const SfxSuggestion = z.object({
 
 export const ScenePlanOutput = z.object({
   sceneId: z.string(),
+  analysis: SceneAnalysis,
   visualStrategy: VisualStrategy,
   visualNeeds: z.array(
     z.object({

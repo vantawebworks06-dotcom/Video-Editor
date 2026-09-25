@@ -5,6 +5,7 @@
  */
 import type {
   MemePlan,
+  SceneAnalysis,
   ScenePlan,
   SfxCue,
   TextOverlayPlan,
@@ -36,7 +37,8 @@ const STOP = new Set(
 
 const EMOTION = /\b(death|died|killed|murder|war|love|lost|loss|grief|tragic|tragedy|fear|violence|shot|funeral|cried|pain|broke|heart|alone)\b/i;
 const MEME_CUES = /\b(somehow|worse|of course|apparently|turns out|ironically|genius|disaster|nobody|literally|obviously|surprisingly|plot twist|awkward|chaos|embarrass\w*|ridiculous|absurd|wait)\b/i;
-const ARTICLE_CUES = /\b(newspaper|headline|reported|article|wrote|published|the gleaner|the observer|press|magazine|front page|tweet|posted|statement)\b/i;
+// News, articles, controversies, social media, YouTube, statistics and quotes → article/screenshot visuals.
+const ARTICLE_CUES = /\b(newspapers?|headlines?|reported|reports|article|wrote|published|the gleaner|the observer|press|magazine|front page|tweets?|tweeted|posted|statement|controvers\w*|social media|youtube|instagram|twitter|facebook|tiktok|viral|comments?|statistics?|percent|survey|poll|quoted?|called it)\b/i;
 const INTERVIEW_CUES = /\b(said|told|interview|explained|recalled|remembers|according to)\b/i;
 const MAP_CUES = /\b(map|border|island|country|region|city of|miles|kilometres|kilometers|located)\b/i;
 const YEAR = /\b(1[89]\d\d|20[0-2]\d)s?\b/;
@@ -88,6 +90,11 @@ function keywords(text: string, n = 4): string[] {
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, n).map(([w]) => w);
 }
 
+/** The script's main subject: its most frequent content word ("dancehall", "records"). */
+export function subjectAnchor(fullText: string): string | null {
+  return keywords(fullText, 1)[0] ?? null;
+}
+
 /** The script's main location, used to keep generic queries in context. */
 export function contextAnchor(fullText: string): string | null {
   const counts = new Map<string, number>();
@@ -127,7 +134,50 @@ function strategyFor(text: string, style: DirectorContext["style"], seed: string
   return prefs[Math.floor(seeded(seed)() * prefs.length)] ?? "documentary";
 }
 
-function queriesFor(text: string, anchor: string | null): string[] {
+/** Capitalised names that are not places or sentence starts (people, bands, crews). */
+function names(text: string): string[] {
+  const where = new Set(places(text));
+  const out: string[] = [];
+  const re = /(?<![.!?]\s)(?<!^)\b([A-Z][\p{L}'-]+(?:\s+[A-Z][\p{L}'-]+)*)/gu;
+  for (const m of text.matchAll(re)) {
+    const n = m[1]!;
+    if (where.has(n) || STOP.has(n.toLowerCase()) || FILLER.has(n.toLowerCase()) || n.length < 3) continue;
+    if (/^(January|February|March|April|May|June|July|August|September|October|November|December|Prime|Minister|President)$/.test(n)) continue;
+    out.push(n);
+  }
+  return [...new Set(out)];
+}
+
+const EVENT_WORDS = /\b(rivalry|clash|concert|election|war|fight\w*|riot|protest|festival|trial|murder|shooting|meeting|tour|release|ban|arrest|strike|celebration|funeral|dance|party|show|stage)\b/gi;
+
+const KNOWN_PLACES =
+  /\b(Jamaica|Kingston|Montego Bay|Spanish Town|Ocho Rios|Trinidad|Barbados|Haiti|Cuba|Caribbean|London|New York|Brooklyn|Miami|Toronto|Paris|Tokyo|Lagos|Accra|Nigeria|Ghana|Africa|Europe|America|Canada|Mexico|Brazil|India|China|England|Britain|France|Germany|Spain|Italy|California|Texas|Chicago|Los Angeles|Atlanta)\b/g;
+
+/** Rule-based scene analysis (Claude fills the same structure when configured). */
+function analysisFor(text: string, strategy: VisualStrategy, meme: MemePlan, anchor: string | null): SceneAnalysis {
+  const year = text.match(YEAR)?.[1] ?? null;
+  const funny = meme.insert;
+  const tone: SceneAnalysis["tone"] = funny ? "humorous" : EMOTION.test(text) ? "somber" : /\b(war|fight|threat|rivalry|violence|clash)\b/i.test(text) ? "tense" : /[!]/.test(text) ? "dramatic" : "neutral";
+  const locs = places(text);
+  // Well-known places named without a preposition ("split Jamaica into…") are still places.
+  for (const m of text.matchAll(KNOWN_PLACES)) if (!locs.includes(m[1]!)) locs.push(m[1]!);
+  if (anchor && !locs.includes(anchor) && text.includes(anchor.split(" ")[0]!)) locs.push(anchor);
+  return {
+    topic: nounPhrases(text, 1)[0] ?? keywords(text, 2).join(" ") ?? text.slice(0, 40),
+    people: names(text).filter((n) => !locs.includes(n)).slice(0, 6),
+    locations: locs.slice(0, 6),
+    events: [...new Set((text.match(EVENT_WORDS) ?? []).map((e) => e.toLowerCase()))].slice(0, 6),
+    objects: keywords(text, 4),
+    era: year ? `${year.slice(0, 3)}0s` : null,
+    tone,
+    archivalUseful: Boolean(year && Number(year) < 2012) || strategy === "archival_collage" || strategy === "historical_timeline",
+    photoUseful: strategy !== "cinematic_broll",
+    screenshotUseful: ARTICLE_CUES.test(text),
+    memeAppropriate: funny,
+  };
+}
+
+function queriesFor(text: string, anchor: string | null, topic: string | null = null): string[] {
   const where = places(text);
   const phrases = nounPhrases(text, 3);
   const kw = keywords(text, 4);
@@ -139,11 +189,17 @@ function queriesFor(text: string, anchor: string | null): string[] {
   if (phrases[0]) q.push(phrases[0]);
   if (where[0]) q.push(decade ? `${where[0]} ${decade}` : where[0]);
   if (kw[0]) q.push(ctx ? `${kw[0]} ${ctx}` : kw[0]);
+  // Names are ambiguous on their own ("Gaza" → Gaza Strip), so always pair them with the
+  // script's subject ("Gully Gaza dancehall").
+  const who = names(text).filter((n) => !new RegExp(`^(?:${KNOWN_PLACES.source})$`).test(n) && !/\b(Prime|Minister|President|Mayor|Governor|King|Queen)\b/.test(n));
+  const subject = topic ?? anchor?.split(" ")[0] ?? "";
+  if (who.length >= 2) q.push(`${who[0]} ${who[1]} ${subject}`.trim());
+  else if (who[0]) q.push(`${who[0]} ${subject}`.trim());
   if (phrases[1]) q.push(phrases[1]);
   if (kw.length >= 2) q.push(`${kw[0]} ${kw[1]}`);
   if (!q.length && anchor) q.push(anchor);
   if (!q.length) q.push(text.split(/\s+/).slice(0, 3).join(" "));
-  return [...new Set(q)].slice(0, 5);
+  return [...new Set(q)].slice(0, 6);
 }
 
 export function memeFor(text: string, sceneDuration: number): MemePlan {
@@ -220,13 +276,15 @@ export class HeuristicDirector implements Director {
 
   async planScenes(segments: SceneSegment[], ctx: DirectorContext): Promise<ScenePlan[]> {
     const recent: ("video" | "photo" | "archival" | "screenshot" | "gif" | "text")[] = [];
-    const anchor = contextAnchor(segments.map((s) => s.narration).join(" "));
+    const allText = segments.map((s) => s.narration).join(" ");
+    const anchor = contextAnchor(allText);
+    const topic = subjectAnchor(allText);
     return segments.map((seg) => {
       const dur = seg.endTime - seg.startTime;
       const strategy = strategyFor(seg.narration, ctx.style, seg.sceneId);
       const target = targetShotDuration(seg.intensity, ctx.style);
       const shots = splitSceneDurations(dur, target, seg.sceneId);
-      const queries = queriesFor(seg.narration, anchor);
+      const queries = queriesFor(seg.narration, anchor, topic);
       const needs: VisualNeed[] = shots.map((d, i) => {
         let type: VisualNeed["type"];
         if (strategy === "article_breakdown" && i === 0) type = "article";
@@ -238,6 +296,7 @@ export class HeuristicDirector implements Director {
         return { type, queries: q.slice(0, 5), duration: d, description: `${type} for: ${seg.summary.slice(0, 80)}` };
       });
       const text = textFor(seg.narration, ctx.style, seg.sceneId, dur);
+      const meme = memeFor(seg.narration, dur);
       const sfx: SfxCue[] = [];
       if (seg.importance === "high") sfx.push({ kind: "whoosh", at: 0, reason: "important scene change" });
       if (text.enabled) sfx.push({ kind: "impact", at: text.at, reason: "text emphasis" });
@@ -253,10 +312,11 @@ export class HeuristicDirector implements Director {
         visualStrategy: strategy,
         visualNeeds: needs,
         textOverlay: text,
-        meme: memeFor(seg.narration, dur),
+        meme,
         motion: { type: "slow_zoom_in", intensity: 0.08 },
         transition: seg.importance === "high" && ctx.style.transitionStyle !== "mostly_hard_cut" ? "flash" : "hard_cut",
         sfx,
+        analysis: analysisFor(seg.narration, strategy, meme, anchor),
       } satisfies ScenePlan;
     });
   }
@@ -299,7 +359,16 @@ export class HeuristicDirector implements Director {
       const motion = isStill ? chooseMotion(c.asset.width, c.asset.height, prev, c.suggestedMotion, c.clipId) : rand() < 0.25 ? "punch_in" : "none";
       prev = motion;
       const annotations: ClipDecision["annotations"] =
-        layout === "article" ? [{ kind: "highlight", rect: { x: 0.12, y: 0.18, w: 0.76, h: 0.12 }, appearAt: 0.6 }] : [];
+        layout === "article"
+          ? [
+              {
+                // Vary the call-out: highlight, circle, underline or arrow on the headline area.
+                kind: (["highlight", "red_circle", "underline", "arrow"] as const)[Math.floor(rand() * 4)]!,
+                rect: { x: 0.12, y: 0.12 + rand() * 0.1, w: 0.76, h: 0.12 },
+                appearAt: 0.5 + rand() * 0.6,
+              },
+            ]
+          : [];
       return {
         clipId: c.clipId,
         layout,

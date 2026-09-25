@@ -73,7 +73,7 @@ export interface StatusData {
   };
   pipelineJob: JobInfo | null;
   renderJob: JobInfo | null;
-  latestExport: { id: string; format: string; url: string | null; size_bytes: number | null; duration: number | null; attributions: string[]; created_at: string } | null;
+  latestExport: { id: string; format: string; url: string | null; downloadUrl: string | null; local: boolean; size_bytes: number | null; duration: number | null; attributions: string[]; created_at: string } | null;
   narrationUrl: string | null;
   usage: { calls: number; cached_calls: number; input_tokens: number; output_tokens: number; cost_usd: number };
 }

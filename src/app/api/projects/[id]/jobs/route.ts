@@ -4,7 +4,7 @@ import { activeJob, HttpError, parseBody, requireProject, requireUser, route } f
 import { OutputFormat } from "@/lib/domain/types";
 
 const Body = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("generate") }),
+  z.object({ type: z.literal("generate"), autoRender: OutputFormat.optional() }),
   z.object({ type: z.literal("regenerate_scenes"), sceneIds: z.array(z.string().regex(/^scene_\d{3,}$/)).min(1).max(200) }),
   z.object({ type: z.literal("analyze_reference"), apply: z.boolean().default(true) }),
   z.object({ type: z.literal("render"), format: OutputFormat.default("landscape") }),
@@ -36,7 +36,14 @@ export const POST = route(async (req: NextRequest, ctx: RouteContext<"/api/proje
   if (await activeJob(auth.supabase, project.id)) throw new HttpError(409, "Another generation job is already running for this project.");
   if (body.type === "generate" && !project.narration_path && !project.is_demo) throw new HttpError(400, "Upload a narration first.");
   if (body.type === "analyze_reference" && !project.reference_video_path) throw new HttpError(400, "Upload a reference video first.");
-  const payload = body.type === "regenerate_scenes" ? { sceneIds: body.sceneIds } : body.type === "analyze_reference" ? { apply: body.apply } : {};
+  const payload =
+    body.type === "regenerate_scenes"
+      ? { sceneIds: body.sceneIds }
+      : body.type === "analyze_reference"
+        ? { apply: body.apply }
+        : body.autoRender
+          ? { autoRender: body.autoRender }
+          : {};
   const { data, error } = await auth.supabase
     .from("pipeline_jobs")
     .insert({ project_id: project.id, user_id: auth.userId, kind: body.type, payload })
