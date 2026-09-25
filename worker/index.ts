@@ -13,7 +13,7 @@ import path from "node:path";
 import { makeClaude, makeDirector, parseSettings, resolveStyle } from "@/lib/data/project";
 import { type LoadedEdit, loadEdit, saveGeneration, SupabaseSearchCache } from "@/lib/data/store";
 import { DEMO_SCRIPT } from "@/lib/demo/script";
-import { OutputFormat, type ProjectSettings, Transcript, type AssetRef } from "@/lib/domain/types";
+import { ACTIVE_RENDER_STATUSES, JOB_CANCELLED, OutputFormat, type ProjectSettings, Transcript, type AssetRef } from "@/lib/domain/types";
 import { applyOriginalFootage, narrationFootageAsset } from "@/lib/pipeline/originalFootage";
 import { transcribeLocally } from "@/lib/transcription/local";
 import { stableHash } from "@/lib/media/cache";
@@ -23,7 +23,7 @@ import { generateEdit, type SceneSelection } from "@/lib/pipeline/generate";
 import { buildTimeline } from "@/lib/pipeline/timelineBuilder";
 import { alignScriptToAudio } from "@/lib/pipeline/transcript";
 import { analyzeReferenceVideo } from "@/lib/reference/analyze";
-import { detectSilences, probe, runFfmpeg } from "@/lib/render/ffmpeg";
+import { bindProcessesTo, detectSilences, probe, runFfmpeg } from "@/lib/render/ffmpeg";
 import { library, libraryReady } from "@/lib/render/library";
 import { renderTimeline } from "@/lib/render/render";
 import { resolveCredentials } from "@/lib/settings/apiKeys";
@@ -135,6 +135,7 @@ async function ensureTranscript(
   audio: { path: string; duration: number },
   creds: { openai?: string },
   onProgress?: (fraction: number) => void,
+  signal?: AbortSignal,
 ): Promise<Transcript> {
   const existing = Transcript.safeParse(p.transcript);
   if (existing.success && Math.abs(existing.data.duration - audio.duration) < 0.5) return existing.data;
@@ -148,7 +149,7 @@ async function ensureTranscript(
     if (!existsSync(mp3)) await runFfmpeg(["-i", audio.path, "-ac", "1", "-ar", "16000", "-b:a", "48k", mp3]);
     transcript = await transcribeWithWhisper(mp3, creds.openai, audio.duration);
   } else {
-    transcript = await transcribeLocally(audio.path, audio.duration, onProgress);
+    transcript = await transcribeLocally(audio.path, audio.duration, onProgress, signal);
   }
   await db.from("projects").update({ transcript, narration_duration: audio.duration }).eq("id", p.id);
   return transcript;
@@ -167,7 +168,7 @@ interface JobRow {
   format?: OutputFormat;
 }
 
-async function runPipelineJob(job: JobRow) {
+async function runPipelineJob(job: JobRow, signal: AbortSignal) {
   const update = (fields: Record<string, unknown>) =>
     db.from("pipeline_jobs").update({ ...fields, heartbeat_at: new Date().toISOString() }).eq("id", job.id);
   // p < 0 → update the stage label only (keep the current percentage). A new stage
@@ -177,7 +178,9 @@ async function runPipelineJob(job: JobRow) {
   };
   const throttled = throttle(send, 700);
   let lastStage = "";
+  // Every progress report doubles as a cancellation checkpoint.
   const progress = async (stage: string, p: number) => {
+    signal.throwIfAborted();
     const kind = stage.split("…")[0]!;
     if (kind !== lastStage) {
       lastStage = kind;
@@ -195,6 +198,7 @@ async function runPipelineJob(job: JobRow) {
     await progress("Analysing reference video", 0.1);
     const file = await downloadObject(project.reference_video_path);
     const analysis = await analyzeReferenceVideo(file, { workDir: path.join(ROOT, "reference", job.id), claude: claude ?? undefined });
+    signal.throwIfAborted();
     const { data: profile, error } = await db
       .from("style_profiles")
       .insert({ user_id: project.user_id, name: `Reference: ${project.name}`.slice(0, 120), source: "reference", profile: analysis.profile, metrics: { ...analysis.metrics, measured: analysis.measured, estimated: analysis.estimated, method: analysis.method, notes: analysis.notes } })
@@ -210,7 +214,7 @@ async function runPipelineJob(job: JobRow) {
   await progress("Analyzing narration…", 0.02);
   const audio = await narrationAudio(project);
   await progress("Transcribing…", 0.04);
-  const transcript = await ensureTranscript(project, audio, creds, (f) => void progress(`Transcribing… ${Math.round(f * 100)}%`, 0.04 + f * 0.21));
+  const transcript = await ensureTranscript(project, audio, creds, (f) => void progress(`Transcribing… ${Math.round(f * 100)}%`, 0.04 + f * 0.21).catch(() => undefined), signal);
   const style = await resolveStyle(db, project.style_profile_id, settings);
   const director = makeDirector(claude, settings);
   const orientation = "landscape" as const;
@@ -231,13 +235,13 @@ async function runPipelineJob(job: JobRow) {
   if (settings.originalFootage === "mix" && audio.video) {
     applyOriginalFootage(result.selections, result.plans, narrationFootageAsset(audio.video.storagePath, { ...audio.video, duration: audio.duration }), onlySceneIds);
   }
-  await progress("Building timeline…", 0.98);
+  await progress("Building timeline…", 0.98); // last checkpoint: a cancelled job never replaces the edit
   await saveGeneration(db, { userId: project.user_id, projectId: project.id }, result, onlySceneIds);
   await db.from("projects").update({ status: "ready", timeline_version: project.timeline_version + 1 }).eq("id", project.id);
 
   // Auto-Edit: optionally queue a preview render as soon as the timeline is ready.
   const autoRender = OutputFormat.safeParse(job.payload?.autoRender);
-  if (autoRender.success) {
+  if (autoRender.success && !signal.aborted) {
     await db.from("render_jobs").insert({ project_id: project.id, user_id: project.user_id, format: autoRender.data, timeline_version: project.timeline_version + 1 });
   }
 
@@ -281,10 +285,11 @@ function renderableSelections(selections: LoadedEdit["selections"], settings: Pr
   });
 }
 
-async function runRenderJob(job: JobRow) {
+async function runRenderJob(job: JobRow, signal: AbortSignal) {
   const warnings: string[] = [];
+  // Only while still active: a progress write must never revive a cancelled render.
   const update = (fields: Record<string, unknown>) =>
-    db.from("render_jobs").update({ ...fields, heartbeat_at: new Date().toISOString() }).eq("id", job.id);
+    db.from("render_jobs").update({ ...fields, heartbeat_at: new Date().toISOString() }).eq("id", job.id).in("status", [...ACTIVE_RENDER_STATUSES]);
   const stageUpdate = throttle(async (status: string, p: number, message: string) => {
     await update({ status, progress: Math.min(1, p), current_stage: message });
   }, 800);
@@ -294,7 +299,7 @@ async function runRenderJob(job: JobRow) {
   const edit = await loadEdit(db, project.id);
   if (!edit.selections.length) throw new Error("Nothing to render — generate the edit first.");
   const audio = await narrationAudio(project);
-  const transcript = await ensureTranscript(project, audio, await resolveCredentials(project.user_id), (f) => void stageUpdate("DOWNLOADING", 0, `Transcribing… ${Math.round(f * 100)}%`));
+  const transcript = await ensureTranscript(project, audio, await resolveCredentials(project.user_id), (f) => void stageUpdate("DOWNLOADING", 0, `Transcribing… ${Math.round(f * 100)}%`), signal);
   const selections = renderableSelections(edit.selections, settings, (m) => warnings.push(m));
   if (!selections.length) throw new Error("Every visual was removed by the rights gate. Review assets in the Rights panel.");
 
@@ -314,10 +319,14 @@ async function runRenderJob(job: JobRow) {
       // "uploaded:narration:<path>" = the narration video itself; "uploaded:<path>" = other uploads.
       return downloadObject(ref.assetId.slice("uploaded:".length).replace(/^narration:/, ""));
     },
-    onStage: (s, p, m) => stageUpdate(s, p, m),
+    onStage: (s, p, m) => {
+      signal.throwIfAborted();
+      return stageUpdate(s, p, m);
+    },
     log: (m) => log(`[render ${job.id.slice(0, 8)}] ${m}`),
   });
   warnings.push(...result.warnings);
+  signal.throwIfAborted();
 
   const size = (await stat(outPath)).size;
   const objectPath = `${project.id}/renders/${job.id}.mp4`;
@@ -352,6 +361,33 @@ async function claim<T>(fn: "claim_pipeline_job" | "claim_render_job"): Promise<
   const { data, error } = await db.rpc(fn, { p_worker: WORKER_ID });
   if (error) throw new Error(`${fn}: ${error.message}`);
   return (Array.isArray(data) ? data[0] : data) ?? null;
+}
+
+/**
+ * Watch a claimed job for cancellation (the cancel API marks it FAILED). On cancel the signal
+ * aborts, FFmpeg processes are killed, and `run` settles at once instead of waiting for the job
+ * to reach its next checkpoint.
+ */
+function watchJob(table: "pipeline_jobs" | "render_jobs", id: string) {
+  const ctl = new AbortController();
+  bindProcessesTo(ctl.signal);
+  const timer = setInterval(async () => {
+    const { data } = await db.from(table).select("status").eq("id", id).maybeSingle();
+    if (data?.status === "FAILED" && !ctl.signal.aborted) ctl.abort(new Error(JOB_CANCELLED));
+  }, 2000);
+  const aborted = new Promise<never>((_, reject) => ctl.signal.addEventListener("abort", () => reject(ctl.signal.reason), { once: true }));
+  aborted.catch(() => undefined);
+  return {
+    signal: ctl.signal,
+    run: <T>(work: Promise<T>) => Promise.race([work, aborted]),
+    stop: () => clearInterval(timer),
+  };
+}
+
+/** A cancelled generation leaves the previous edit in place. */
+async function restoreProjectStatus(projectId: string) {
+  const { data } = await db.from("projects").select("timeline_version").eq("id", projectId).maybeSingle();
+  await db.from("projects").update({ status: Number(data?.timeline_version ?? 0) > 0 ? "ready" : "draft", last_error: null }).eq("id", projectId);
 }
 
 async function recoverStaleJobs() {
@@ -396,29 +432,45 @@ async function main() {
       const pj = await claim<JobRow>("claim_pipeline_job");
       if (pj) {
         log(`pipeline job ${pj.id} (${pj.kind}) for project ${pj.project_id}`);
+        const watch = watchJob("pipeline_jobs", pj.id);
         try {
-          const result = await runPipelineJob(pj);
-          await db.from("pipeline_jobs").update({ status: "COMPLETE", progress: 1, current_stage: "Done", result, completed_at: new Date().toISOString() }).eq("id", pj.id);
+          const result = await watch.run(runPipelineJob(pj, watch.signal));
+          await db.from("pipeline_jobs").update({ status: "COMPLETE", progress: 1, current_stage: "Done", result, completed_at: new Date().toISOString() }).eq("id", pj.id).eq("status", "RUNNING");
           log(`pipeline job ${pj.id} complete`);
         } catch (err) {
-          const msg = (err as Error).message;
-          log(`pipeline job ${pj.id} failed: ${msg}`);
-          await db.from("pipeline_jobs").update({ status: "FAILED", error: msg.slice(0, 2000), completed_at: new Date().toISOString() }).eq("id", pj.id);
-          if (pj.kind !== "analyze_reference") await db.from("projects").update({ status: "error", last_error: msg.slice(0, 2000) }).eq("id", pj.project_id);
+          if (watch.signal.aborted) {
+            log(`pipeline job ${pj.id} cancelled`);
+            if (pj.kind !== "analyze_reference") await restoreProjectStatus(pj.project_id);
+          } else {
+            const msg = (err as Error).message;
+            log(`pipeline job ${pj.id} failed: ${msg}`);
+            await db.from("pipeline_jobs").update({ status: "FAILED", error: msg.slice(0, 2000), completed_at: new Date().toISOString() }).eq("id", pj.id).eq("status", "RUNNING");
+            if (pj.kind !== "analyze_reference") await db.from("projects").update({ status: "error", last_error: msg.slice(0, 2000) }).eq("id", pj.project_id);
+          }
+        } finally {
+          watch.stop();
         }
         continue;
       }
       const rj = await claim<JobRow>("claim_render_job");
       if (rj) {
         log(`render job ${rj.id} (${rj.format}) for project ${rj.project_id}`);
+        const watch = watchJob("render_jobs", rj.id);
         try {
-          const r = await runRenderJob(rj);
-          await db.from("render_jobs").update({ status: "COMPLETE", progress: 1, current_stage: "Complete", output_path: r.output_path, warnings: r.warnings.slice(0, 100), completed_at: new Date().toISOString() }).eq("id", rj.id);
+          const r = await watch.run(runRenderJob(rj, watch.signal));
+          await db.from("render_jobs").update({ status: "COMPLETE", progress: 1, current_stage: "Complete", output_path: r.output_path, warnings: r.warnings.slice(0, 100), completed_at: new Date().toISOString() }).eq("id", rj.id).in("status", [...ACTIVE_RENDER_STATUSES]);
           log(`render job ${rj.id} complete`);
         } catch (err) {
-          const msg = (err as Error).message;
-          log(`render job ${rj.id} failed: ${msg}`);
-          await db.from("render_jobs").update({ status: "FAILED", error: msg.slice(0, 2000), completed_at: new Date().toISOString() }).eq("id", rj.id);
+          if (watch.signal.aborted) {
+            log(`render job ${rj.id} cancelled`);
+            await rm(path.join(ROOT, "render", rj.id), { recursive: true, force: true }).catch(() => undefined);
+          } else {
+            const msg = (err as Error).message;
+            log(`render job ${rj.id} failed: ${msg}`);
+            await db.from("render_jobs").update({ status: "FAILED", error: msg.slice(0, 2000), completed_at: new Date().toISOString() }).eq("id", rj.id).in("status", [...ACTIVE_RENDER_STATUSES]);
+          }
+        } finally {
+          watch.stop();
         }
         continue;
       }

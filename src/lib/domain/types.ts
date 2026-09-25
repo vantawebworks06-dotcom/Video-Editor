@@ -416,6 +416,12 @@ export const RenderStatus = z.enum([
 ]);
 export type RenderStatus = z.infer<typeof RenderStatus>;
 
+/** Job states in which a job can still be cancelled. */
+export const ACTIVE_PIPELINE_STATUSES = ["QUEUED", "RUNNING"] as const;
+export const ACTIVE_RENDER_STATUSES = ["QUEUED", "DOWNLOADING", "PREPARING", "RENDERING", "FINALIZING"] as const;
+/** A cancelled job is stored as FAILED with exactly this error (no schema change needed). */
+export const JOB_CANCELLED = "Cancelled by user.";
+
 export const FORMAT_DIMENSIONS: Record<OutputFormat, { width: number; height: number; fps: number }> = {
   landscape: { width: 1920, height: 1080, fps: 30 },
   vertical: { width: 1080, height: 1920, fps: 30 },

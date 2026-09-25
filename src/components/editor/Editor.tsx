@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, Button, cx, fmtTime, Progress, Select, Tag } from "@/components/ui";
+import { JOB_CANCELLED } from "@/lib/domain/types";
 import { MUSIC_TRACKS } from "@/lib/render/libraryTracks";
 import { Inspector } from "./Inspector";
 import { ReplaceDialog } from "./ReplaceDialog";
@@ -96,6 +97,19 @@ export function Editor({ projectId }: { projectId: string }) {
     setBusy(false);
   };
 
+  const cancel = async (target: "pipeline" | "render") => {
+    if (!confirm(target === "render" ? "Cancel this render?" : "Cancel generation? Your current edit is kept.")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/api/projects/${projectId}/jobs/cancel`, { method: "POST", json: { target } });
+      await loadStatus();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    setBusy(false);
+  };
+
   if (!status) return <div className="p-8 text-sm text-muted">{error ?? "Loading project…"}</div>;
   const p = status.project;
   const clip = edit?.clips.find((c) => c.clipId === selectedClip) ?? null;
@@ -148,18 +162,24 @@ export function Editor({ projectId }: { projectId: string }) {
                 {pj.kind === "analyze_reference" ? "Reference analysis" : "Generating edit"}: {pj.current_stage ?? pj.status}
               </span>
               <Progress value={Number(pj.progress)} />
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => void cancel("pipeline")}>
+                Cancel
+              </Button>
             </div>
           )}
-          {pj?.status === "FAILED" && <div className="text-danger">Last job failed: {pj.error}</div>}
+          {pj?.status === "FAILED" && (pj.error === JOB_CANCELLED ? <div className="text-muted">Generation cancelled.</div> : <div className="text-danger">Last job failed: {pj.error}</div>)}
           {rj && ACTIVE.includes(rj.status) && (
             <div className="flex items-center gap-3">
               <span className="w-64 truncate">
                 Render ({rj.format}) · {rj.status}: {rj.current_stage}
               </span>
               <Progress value={Number(rj.progress)} />
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => void cancel("render")}>
+                Cancel
+              </Button>
             </div>
           )}
-          {rj?.status === "FAILED" && <div className="text-danger">Render failed: {rj.error}</div>}
+          {rj?.status === "FAILED" && (rj.error === JOB_CANCELLED ? <div className="text-muted">Render cancelled.</div> : <div className="text-danger">Render failed: {rj.error}</div>)}
           {pj?.status === "QUEUED" || rj?.status === "QUEUED" ? <div className="text-muted">Waiting for a worker — make sure `npm run worker` is running.</div> : null}
         </div>
       ) : null}
@@ -256,9 +276,9 @@ export function Editor({ projectId }: { projectId: string }) {
           ) : (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-black p-4">
           {pj && ACTIVE.includes(pj.status) && pj.kind !== "analyze_reference" ? (
-            <AutoEditProgress stage={pj.current_stage ?? "Queued…"} progress={Number(pj.progress)} queued={pj.status === "QUEUED"} />
+            <AutoEditProgress stage={pj.current_stage ?? "Queued…"} progress={Number(pj.progress)} queued={pj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("pipeline")} />
           ) : rj && ACTIVE.includes(rj.status) && !status.latestExport ? (
-            <AutoEditProgress stage={rj.status === "FINALIZING" ? "Finalizing…" : `Rendering… ${rj.current_stage ?? ""}`} progress={Number(rj.progress)} queued={rj.status === "QUEUED"} />
+            <AutoEditProgress stage={rj.status === "FINALIZING" ? "Finalizing…" : `Rendering… ${rj.current_stage ?? ""}`} progress={Number(rj.progress)} queued={rj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("render")} />
           ) : status.latestExport?.url ? (
             <>
               <video
@@ -371,7 +391,7 @@ const STEPS = [
 ];
 
 /** Step list for the automatic edit, highlighting the stage the worker reports. */
-function AutoEditProgress({ stage, progress, queued }: { stage: string; progress: number; queued: boolean }) {
+function AutoEditProgress({ stage, progress, queued, busy, onCancel }: { stage: string; progress: number; queued: boolean; busy: boolean; onCancel: () => void }) {
   const current = STEPS.findIndex((s) => stage.toLowerCase().startsWith(s.toLowerCase()));
   return (
     <div className="w-full max-w-md space-y-3 text-sm">
@@ -385,6 +405,9 @@ function AutoEditProgress({ stage, progress, queued }: { stage: string; progress
         ))}
       </ol>
       {queued && <p className="text-xs text-muted">Make sure `npm run worker` is running on your computer.</p>}
+      <Button variant="danger" disabled={busy} onClick={onCancel}>
+        Cancel
+      </Button>
     </div>
   );
 }

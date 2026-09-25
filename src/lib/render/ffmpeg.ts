@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { type ChildProcess, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
@@ -13,6 +13,28 @@ export function ffmpegPath(): string {
 export function ffprobePath(): string {
   if (process.env.FFPROBE_PATH) return process.env.FFPROBE_PATH;
   return (require("ffprobe-static") as { path: string }).path;
+}
+
+// FFmpeg/ffprobe processes of the job in progress, so a cancelled job stops its media work at once.
+const children = new Set<ChildProcess>();
+let jobSignal: AbortSignal | undefined;
+
+/** Tie every FFmpeg process started from now on to a job: aborting kills them and refuses new ones. */
+export function bindProcessesTo(signal: AbortSignal) {
+  jobSignal = signal;
+  signal.addEventListener("abort", () => {
+    for (const c of children) c.kill("SIGKILL");
+  }, { once: true });
+}
+
+/** Start a child process tracked for cancellation (throws if the current job was cancelled). */
+export function spawnTracked<C extends ChildProcess>(start: () => C): C {
+  jobSignal?.throwIfAborted();
+  const child = start();
+  children.add(child);
+  child.once("exit", () => children.delete(child));
+  child.once("error", () => children.delete(child));
+  return child;
 }
 
 export class FfmpegError extends Error {
@@ -40,7 +62,7 @@ export interface RunOptions {
 export function runFfmpeg(args: string[], opts: RunOptions = {}): Promise<void> {
   return new Promise((resolve, reject) => {
     const full = ["-hide_banner", "-nostdin", "-y", "-loglevel", "error", "-progress", "pipe:1", ...args];
-    const child = spawn(ffmpegPath(), full, { cwd: opts.cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawnTracked(() => spawn(ffmpegPath(), full, { cwd: opts.cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }));
     let stderr = "";
     let stdoutBuf = "";
     const timer = setTimeout(() => {
@@ -88,10 +110,8 @@ export interface ProbeResult {
 
 export function probe(input: string, timeoutMs = 60_000): Promise<ProbeResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      ffprobePath(),
-      ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", input],
-      { windowsHide: true },
+    const child = spawnTracked(() =>
+      spawn(ffprobePath(), ["-v", "error", "-print_format", "json", "-show_format", "-show_streams", input], { windowsHide: true }),
     );
     let out = "";
     let err = "";
@@ -135,10 +155,8 @@ export function probe(input: string, timeoutMs = 60_000): Promise<ProbeResult> {
 /** Detect pauses in narration (used to anchor script alignment). */
 export async function detectSilences(input: string, minSilence = 0.3, noiseDb = -35): Promise<{ start: number; end: number }[]> {
   return new Promise((resolve, reject) => {
-    const child = spawn(
-      ffmpegPath(),
-      ["-hide_banner", "-nostdin", "-i", input, "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"],
-      { windowsHide: true },
+    const child = spawnTracked(() =>
+      spawn(ffmpegPath(), ["-hide_banner", "-nostdin", "-i", input, "-af", `silencedetect=noise=${noiseDb}dB:d=${minSilence}`, "-f", "null", "-"], { windowsHide: true }),
     );
     let err = "";
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));

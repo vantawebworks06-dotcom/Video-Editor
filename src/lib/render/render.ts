@@ -160,7 +160,7 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
     {
       cwd: opts.workDir,
       durationSeconds: timeline.duration,
-      onProgress: (p) => void stage("FINALIZING", p, "Encoding final video"),
+      onProgress: (p) => void stage("FINALIZING", p, "Encoding final video").catch(() => undefined),
       timeoutMs: 60 * 60_000,
     },
   );

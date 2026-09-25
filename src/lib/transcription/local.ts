@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { Transcript, Word } from "@/lib/domain/types";
-import { ffmpegPath } from "@/lib/render/ffmpeg";
+import { ffmpegPath, spawnTracked } from "@/lib/render/ffmpeg";
 
 /**
  * Free, local speech-to-text: OpenAI's Whisper model running on this machine through
@@ -13,7 +13,7 @@ export const LOCAL_WHISPER_MODEL = process.env.WHISPER_MODEL || "Xenova/whisper-
 /** Decode any audio/video file to 16 kHz mono float32 PCM with FFmpeg. */
 function decodePcm16k(file: string): Promise<Float32Array> {
   return new Promise((resolve, reject) => {
-    const child = spawn(ffmpegPath(), ["-hide_banner", "-nostdin", "-loglevel", "error", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"], { windowsHide: true });
+    const child = spawnTracked(() => spawn(ffmpegPath(), ["-hide_banner", "-nostdin", "-loglevel", "error", "-i", file, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"], { windowsHide: true }));
     const chunks: Buffer[] = [];
     let err = "";
     child.stdout.on("data", (d: Buffer) => chunks.push(d));
@@ -51,6 +51,7 @@ export async function transcribeLocally(
   file: string,
   duration: number,
   onProgress?: (fraction: number) => void,
+  signal?: AbortSignal,
 ): Promise<Transcript> {
   const pcm = await decodePcm16k(file);
   if (pcm.length < 16000) throw new Error("Narration audio is too short to transcribe.");
@@ -61,6 +62,7 @@ export async function transcribeLocally(
   const words: Word[] = [];
   const texts: string[] = [];
   for (let offset = 0; offset < pcm.length; offset += WINDOW) {
+    signal?.throwIfAborted();
     const slice = pcm.subarray(offset, Math.min(pcm.length, offset + WINDOW));
     if (slice.length < 8000) break; // <0.5 s tail
     const base = offset / 16000;

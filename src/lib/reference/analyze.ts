@@ -5,7 +5,7 @@ import type { ClaudeService } from "@/lib/ai/claude/service";
 import { getPreset } from "@/lib/domain/presets";
 import type { StyleProfile } from "@/lib/domain/types";
 import { clamp } from "@/lib/pipeline/engines";
-import { ffmpegPath, probe, runFfmpeg } from "@/lib/render/ffmpeg";
+import { ffmpegPath, probe, runFfmpeg, spawnTracked } from "@/lib/render/ffmpeg";
 
 export interface ReferenceMetrics {
   analysedSeconds: number;
@@ -31,7 +31,7 @@ export interface ReferenceAnalysis {
 
 function ffmpegStderr(args: string[]): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn(ffmpegPath(), ["-hide_banner", "-nostdin", ...args], { windowsHide: true });
+    const child = spawnTracked(() => spawn(ffmpegPath(), ["-hide_banner", "-nostdin", ...args], { windowsHide: true }));
     let err = "";
     child.stderr.on("data", (d: Buffer) => (err += d.toString()));
     child.on("error", reject);
