@@ -9,7 +9,9 @@ import type { Clip, EditData } from "./types";
 // Providers whose previewUrl is a smaller MP4 rendition of the same video (see timelineBuilder).
 const MP4_PREVIEWS = new Set(["pexels", "pixabay"]);
 const VIDEO_FILE = /\.(mp4|webm|mov|m4v|ogv)(\?|#|$)/i;
-const DRIFT = 0.35; // seconds a clip video may drift from the narration before it is re-seeked
+const DRIFT = 0.35; // seconds the speaker's own footage may drift from the narration before a re-seek
+const HAVE_CURRENT_DATA = 2;
+const HAVE_FUTURE_DATA = 3;
 
 type Source = { kind: "video"; src: string; synced: boolean } | { kind: "image"; src: string; fallback: string | null };
 
@@ -84,23 +86,39 @@ function captionChunks(words: Word[]): { start: number; end: number; text: strin
   return out;
 }
 
-function ClipVisual({ clip, source, t, active, playing }: { clip: Clip; source: Source; t: number; active: boolean; playing: boolean }) {
+function ClipVisual({ clip, source, t, active, visible, playing }: { clip: Clip; source: Source; t: number; active: boolean; visible: boolean; playing: boolean }) {
   const ref = useRef<HTMLVideoElement>(null);
   const [broken, setBroken] = useState(false);
+  const placed = useRef<"on" | "off" | null>(null);
   const local = Math.max(0, t - clip.start);
 
+  const synced = source.kind === "video" && source.synced;
   // Keep the clip's video on the narration clock; the next clip waits paused at its first frame.
   useEffect(() => {
     const v = ref.current;
     if (!v) return;
-    const len = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : clip.asset.duration;
-    let want = source.kind === "video" && source.synced ? t : clip.trimStart + (active ? local : 0);
-    if (len && !(source.kind === "video" && source.synced)) want %= len;
-    if (Math.abs(v.currentTime - want) > DRIFT) v.currentTime = want;
     if (active && playing) {
       if (v.paused) void v.play().catch(() => {});
     } else if (!v.paused) v.pause();
-  }, [t, local, active, playing, clip, source]);
+    // Never seek a video that is still loading or seeking: re-seeking a remote file every frame
+    // keeps it from ever playing. The `#t=` fragment on its src already starts it at trimStart.
+    if (v.seeking || v.readyState < HAVE_CURRENT_DATA) return;
+    if (synced) {
+      // The speaker's own footage must stay lip-synced with the narration.
+      if (Math.abs(v.currentTime - t) > (playing ? DRIFT : 0.1)) v.currentTime = t;
+      return;
+    }
+    // Stock footage is seeked once when it goes on screen, then plays freely. Some CDNs (Pixabay)
+    // answer range requests with 200, so Chrome can't seek them; correcting drift every frame
+    // would then snap the video back to 0 forever and freeze the picture.
+    const phase = active ? "on" : "off";
+    if (placed.current === phase) return;
+    placed.current = phase;
+    const len = Number.isFinite(v.duration) && v.duration > 0 ? v.duration : clip.asset.duration;
+    let want = clip.trimStart + (active ? local : 0);
+    if (len) want %= len;
+    if (Math.abs(v.currentTime - want) > 0.1) v.currentTime = want;
+  }, [t, local, active, playing, clip, synced]);
 
   const fit = clip.role === "meme" || clip.layout !== "fullscreen" ? "object-contain" : "object-cover";
   const style = {
@@ -110,9 +128,9 @@ function ClipVisual({ clip, source, t, active, playing }: { clip: Clip; source: 
   const cls = `absolute inset-0 h-full w-full ${fit}`;
 
   return (
-    <div className={`absolute inset-0 overflow-hidden ${active ? "" : "invisible"}`}>
+    <div className={`absolute inset-0 overflow-hidden ${visible ? "" : "invisible"}`}>
       {source.kind === "video" ? (
-        <video ref={ref} src={source.src} muted playsInline preload="auto" className={cls} style={style} />
+        <video ref={ref} src={synced ? source.src : `${source.src}#t=${clip.trimStart}`} poster={clip.asset.thumbnailUrl ?? undefined} muted playsInline loop={!synced} preload="auto" className={cls} style={style} />
       ) : broken && !source.fallback ? null : (
         // eslint-disable-next-line @next/next/no-img-element -- remote provider media, many hosts
         <img src={broken ? source.fallback! : source.src} alt="" decoding="async" className={cls} style={style} onError={() => setBroken(true)} />
@@ -141,6 +159,8 @@ export function LivePlayer({
 }) {
   const [t, setT] = useState(() => playhead.get());
   const [playing, setPlaying] = useState(false);
+  // Play was pressed but the narration has not buffered enough to start/continue.
+  const [buffering, setBuffering] = useState(false);
   const [duration, setDuration] = useState(data.duration);
   const clips = useMemo(() => [...data.clips].sort((a, b) => a.start - b.start), [data.clips]);
   const sources = useMemo(() => new Map(clips.map((c) => [c.rowId, sourceFor(c, narrationUrl)])), [clips, narrationUrl]);
@@ -151,6 +171,7 @@ export function LivePlayer({
     const a = mediaRef.current;
     if (!a) return;
     setT(a.currentTime);
+    setBuffering(!a.paused && a.readyState < HAVE_FUTURE_DATA);
     const now = performance.now();
     if (now - lastPush.current > 100) {
       lastPush.current = now;
@@ -179,6 +200,8 @@ export function LivePlayer({
   // The clip on screen plus the next one (hidden, so its media is loaded before the cut).
   const nextIdx = idx < 0 ? clips.findIndex((c) => c.start > t) : idx + 1;
   const mounted = [idx, nextIdx].filter((i) => i >= 0 && i < clips.length).map((i) => clips[i]!);
+  // In a gap before a clip (e.g. the very start), show the upcoming clip's first frame, not black.
+  const shown = clips[idx >= 0 ? idx : nextIdx];
   const caption = chunks.find((c) => t >= c.start && t <= c.end + 0.3)?.text;
 
   const toggle = () => {
@@ -198,12 +221,18 @@ export function LivePlayer({
       <div className="relative aspect-video max-h-[calc(100%-3.5rem)] w-full cursor-pointer overflow-hidden rounded bg-black" onClick={toggle}>
         {mounted.map((c) => {
           const s = sources.get(c.rowId);
-          return s ? <ClipVisual key={c.rowId} clip={c} source={s} t={t} active={c === clips[idx]} playing={playing} /> : null;
+          return s ? <ClipVisual key={c.rowId} clip={c} source={s} t={t} active={c === clips[idx]} visible={c === shown} playing={playing} /> : null;
         })}
         {idx >= 0 && !sources.get(clips[idx]!.rowId) && <div className="absolute inset-0 flex items-center justify-center text-xs text-muted">No preview for this clip</div>}
         {caption && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[8%] flex justify-center px-6">
             <span className="rounded bg-black/70 px-3 py-1 text-center text-lg font-semibold text-white">{caption}</span>
+          </div>
+        )}
+        {playing && buffering && (
+          <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-2 bg-black/40 text-sm text-white">
+            <span className="h-10 w-10 animate-spin rounded-full border-4 border-white/30 border-t-white" />
+            Loading…
           </div>
         )}
         {!playing && (
@@ -226,7 +255,10 @@ export function LivePlayer({
         ref={mediaRef as RefObject<HTMLAudioElement>}
         src={narrationUrl}
         preload="auto"
-        onPlay={() => setPlaying(true)}
+        onPlay={() => {
+          setPlaying(true);
+          sync();
+        }}
         onPause={() => {
           setPlaying(false);
           sync();
