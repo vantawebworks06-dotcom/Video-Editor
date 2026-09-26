@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type RefObject } from "react";
 import { api, Button, cx, fmtTime, Progress, Select, Tag } from "@/components/ui";
 import { JOB_CANCELLED } from "@/lib/domain/types";
 import { MUSIC_TRACKS } from "@/lib/render/libraryTracks";
 import { Inspector } from "./Inspector";
+import { LivePlayer } from "./LivePlayer";
 import { ReplaceDialog } from "./ReplaceDialog";
 import { ReviewPanel } from "./ReviewPanel";
 import { RightsPanel } from "./RightsPanel";
@@ -44,10 +45,13 @@ export function Editor({ projectId }: { projectId: string }) {
   const [replacing, setReplacing] = useState<{ clip: Clip; tab: "ai" | "search" } | null>(null);
   const [centerTab, setCenterTab] = useState<"preview" | "review">("preview");
   const [showRights, setShowRights] = useState(false);
+  // null = automatic: the live edit until a render exists, then the render.
+  const [watchMode, setWatchMode] = useState<"live" | "render" | null>(null);
   const [format, setFormat] = useState<"landscape" | "vertical" | "draft">("draft");
   const [playhead] = useState(createPlayhead);
   const [busy, setBusy] = useState(false);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // The mounted player (rendered video or the live preview's narration clock); seeking goes through it.
+  const videoRef = useRef<HTMLMediaElement>(null);
   const lastSeen = useRef<string>("");
   const statusRef = useRef<StatusData | null>(null);
   // Signed URLs the editor holds, reported to the status route so it doesn't re-sign them.
@@ -193,6 +197,8 @@ export function Editor({ projectId }: { projectId: string }) {
   const rj = status.renderJob;
   const music = MUSIC_TRACKS.find((t) => t.key === p.settings.musicTrack)?.name ?? (p.settings.musicTrack === "uploaded" ? "Uploaded music" : "No music");
   const hasEdit = Boolean(edit?.clips.length);
+  const canLive = Boolean(hasEdit && status.narrationUrl);
+  const mode = watchMode ?? (status.latestExport?.url ? "render" : "live");
 
   return (
     <div className="flex h-dvh min-h-0 flex-col">
@@ -327,9 +333,18 @@ export function Editor({ projectId }: { projectId: string }) {
           <div className="flex items-center gap-1 border-b border-line bg-panel px-2">
             {(["preview", "review"] as const).map((t) => (
               <button key={t} onClick={() => setCenterTab(t)} className={cx("px-3 py-2 text-xs", centerTab === t ? "border-b-2 border-accent text-foreground" : "text-muted hover:text-foreground")}>
-                {t === "preview" ? "Preview" : `Review scenes${edit?.clips.length ? ` (${edit.clips.length})` : ""}`}
+                {t === "preview" ? "Watch" : `Review scenes${edit?.clips.length ? ` (${edit.clips.length})` : ""}`}
               </button>
             ))}
+            {centerTab === "preview" && canLive && status.latestExport?.url && (
+              <div className="ml-auto flex overflow-hidden rounded border border-line text-[11px]">
+                {(["live", "render"] as const).map((m) => (
+                  <button key={m} onClick={() => setWatchMode(m)} className={cx("px-2.5 py-1", mode === m ? "bg-accent text-accent-ink" : "text-muted hover:text-foreground")}>
+                    {m === "live" ? "Live edit" : "Last render"}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           {centerTab === "review" && edit && hasEdit ? (
             <div className="min-h-0 flex-1 bg-background">
@@ -349,10 +364,12 @@ export function Editor({ projectId }: { projectId: string }) {
             <AutoEditProgress stage={pj.current_stage ?? "Queued…"} progress={Number(pj.progress)} queued={pj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("pipeline")} />
           ) : rj && ACTIVE.includes(rj.status) && !status.latestExport ? (
             <AutoEditProgress stage={rj.status === "FINALIZING" ? "Finalizing…" : `Rendering… ${rj.current_stage ?? ""}`} progress={Number(rj.progress)} queued={rj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("render")} />
+          ) : mode === "live" && canLive && edit ? (
+            <LivePlayer data={edit} narrationUrl={status.narrationUrl!} captions={p.settings.captions !== "OFF"} playhead={playhead} mediaRef={videoRef} />
           ) : status.latestExport?.url ? (
             <>
               <video
-                ref={videoRef}
+                ref={videoRef as RefObject<HTMLVideoElement>}
                 key={status.latestExport.id}
                 src={status.latestExport.url}
                 preload="metadata"
