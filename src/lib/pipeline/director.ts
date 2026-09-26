@@ -12,6 +12,7 @@ import type {
   VisualStrategy,
 } from "@/lib/domain/types";
 import { clamp, diversityPenalty, type VisualKind } from "./engines";
+import type { SceneBoard } from "./storyboard";
 import type { Sentence } from "./transcript";
 
 export interface SceneSegment {
@@ -22,6 +23,8 @@ export interface SceneSegment {
   importance: "low" | "medium" | "high";
   intensity: SceneIntensity;
   summary: string;
+  /** Editorial storyboard for this scene (built before planning; see storyboard.ts). */
+  board?: SceneBoard;
 }
 
 export interface DirectorContext {

@@ -4,6 +4,7 @@
  * not a stand-in pretending to be AI.
  */
 import type {
+  EditorialVisualType,
   MemePlan,
   SceneAnalysis,
   ScenePlan,
@@ -27,6 +28,7 @@ import {
   type SceneSegment,
 } from "./director";
 import { chooseMotion, clamp, kindOf, preferredNeedType, seeded, splitSceneDurations, targetShotDuration } from "./engines";
+import type { SceneBoard } from "./storyboard";
 import type { Sentence } from "./transcript";
 
 const STOP = new Set(
@@ -280,6 +282,7 @@ export class HeuristicDirector implements Director {
     const anchor = contextAnchor(allText);
     const topic = subjectAnchor(allText);
     return segments.map((seg) => {
+      if (seg.board) return planFromStoryboard(seg, seg.board, anchor);
       const dur = seg.endTime - seg.startTime;
       const strategy = strategyFor(seg.narration, ctx.style, seg.sceneId);
       const target = targetShotDuration(seg.intensity, ctx.style);
@@ -379,4 +382,93 @@ export class HeuristicDirector implements Director {
       };
     });
   }
+}
+
+// ---------------------------------------------------------------------------
+// Storyboard-driven plans (the editorial path; see storyboard.ts)
+// ---------------------------------------------------------------------------
+
+/** Searchable need type for each editorial visual type. */
+export function needTypeFor(t: EditorialVisualType): VisualNeed["type"] {
+  switch (t) {
+    case "text_card":
+    case "statistic_graphic":
+    case "timeline_graphic":
+      return "graphic";
+    case "newspaper":
+    case "news_screenshot":
+    case "document":
+      return "article";
+    case "social_screenshot":
+      return "screenshot";
+    case "archival_video":
+      return "archival";
+    case "b_roll":
+    case "establishing_shot":
+    case "abstract_background":
+    case "interview":
+    case "music_video_reference":
+      return "video";
+    case "reaction_gif":
+    case "meme":
+      return "reaction";
+    default:
+      return "photo";
+  }
+}
+
+function strategyForIntent(sb: SceneBoard["storyboard"], beats: SceneBoard["beats"]): VisualStrategy {
+  if (beats.some((b) => b.visualType === "newspaper" || b.visualType === "document")) return "article_breakdown";
+  if (sb.intents.includes("historical_event") || sb.intents.includes("archival")) return "historical_timeline";
+  if (sb.intent === "climax" || sb.intent === "buildup") return "cinematic_broll";
+  if (sb.intents.includes("political")) return "evidence_board";
+  if (beats.filter((b) => b.visualType === "person_photo").length >= 2) return "photograph_sequence";
+  if (sb.intents.includes("conflict")) return "mixed_media";
+  return "documentary";
+}
+
+function planFromStoryboard(seg: SceneSegment, board: SceneBoard, anchor: string | null): ScenePlan {
+  const sb = board.storyboard;
+  const dur = seg.endTime - seg.startTime;
+  const I = sb.intensity;
+  const needs: VisualNeed[] = board.beats.map((b) => ({
+    type: needTypeFor(b.visualType),
+    queries: b.queries,
+    duration: b.end - b.start,
+    description: b.description,
+    visualType: b.visualType,
+    entities: b.entities,
+    year: b.year,
+    topic: b.topic,
+    stockAllowed: b.stockAllowed,
+    fallbacks: b.fallbacks,
+    card: b.card,
+    avoid: b.avoid,
+    local: b.local,
+    line: b.line,
+    transition: b.transition === "hard_cut" ? undefined : b.transition,
+  }));
+  const meme = memeFor(seg.narration, dur);
+  const strategy = strategyForIntent(sb, board.beats);
+  const text: TextOverlayPlan = board.text
+    ? { enabled: true, text: board.text.text, style: board.text.style, position: board.text.position, animation: board.text.style === "dramatic" ? "pop" : "fade", at: clamp(dur * 0.12, 0, dur), duration: clamp(Math.min(2.4, dur * 0.5), 1, 3) }
+    : { enabled: false, text: "", style: "key_phrase", position: "center", animation: "none", at: 0, duration: 1 };
+  return {
+    sceneId: seg.sceneId,
+    startTime: seg.startTime,
+    endTime: seg.endTime,
+    narration: seg.narration,
+    importance: I >= 8 ? "high" : I >= 5 ? "medium" : "low",
+    intensity: { ...seg.intensity, importance: I / 10, emotionalIntensity: sb.intents.includes("emotional") ? 0.8 : seg.intensity.emotionalIntensity },
+    visualStrategy: strategy,
+    visualNeeds: needs,
+    textOverlay: text,
+    meme: { ...meme, insert: meme.insert && board.memeAllowed, reason: sb.memeReason },
+    // Zoom strength follows the intensity curve: gentle in calm passages, stronger when it builds.
+    motion: { type: I >= 8 ? "punch_in" : "slow_zoom_in", intensity: Math.round((0.05 + I * 0.011) * 1000) / 1000 },
+    transition: board.transition,
+    sfx: board.sfx,
+    analysis: analysisFor(seg.narration, strategy, meme, anchor),
+    storyboard: sb,
+  };
 }

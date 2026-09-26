@@ -11,7 +11,7 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import os from "node:os";
 import path from "node:path";
 import { makeClaude, makeDirector, parseSettings, resolveStyle } from "@/lib/data/project";
-import { type LoadedEdit, loadEdit, saveGeneration, SupabaseSearchCache } from "@/lib/data/store";
+import { type AssetRow, assetRowToNormalized, type LoadedEdit, loadEdit, saveGeneration, SupabaseSearchCache } from "@/lib/data/store";
 import { DEMO_SCRIPT } from "@/lib/demo/script";
 import { ACTIVE_RENDER_STATUSES, JOB_CANCELLED, OutputFormat, type ProjectSettings, Transcript, type AssetRef } from "@/lib/domain/types";
 import { applyOriginalFootage, narrationFootageAsset } from "@/lib/pipeline/originalFootage";
@@ -228,9 +228,13 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
     onlySceneIds = new Set(ids);
   }
 
+  // The user's own library (favourites in the Media Library) is preferred when relevant.
+  const { data: favs } = await db.from("assets").select("*").eq("user_id", project.user_id).eq("is_favorite", true).limit(300);
+  const userLibrary = ((favs ?? []) as AssetRow[]).map(assetRowToNormalized).filter((a) => a.provider !== "graphic" && !looksAiGenerated(a));
+
   const result = await generateEdit(
     { projectTitle: project.name, transcript, settings, style, orientation, onlySceneIds, existing },
-    { director, creds, searchCache: new SupabaseSearchCache(db), onProgress: (s, p) => progress(s, p < 0 ? p : 0.25 + p * 0.72), log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`), signal },
+    { director, creds, library: userLibrary, searchCache: new SupabaseSearchCache(db), onProgress: (s, p) => progress(s, p < 0 ? p : 0.25 + p * 0.72), log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`), signal },
   );
   if (settings.originalFootage === "mix" && audio.video) {
     applyOriginalFootage(result.selections, result.plans, narrationFootageAsset(audio.video.storagePath, { ...audio.video, duration: audio.duration }), onlySceneIds);
@@ -247,10 +251,13 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
 
   const errorSummary: Record<string, number> = {};
   for (const e of result.searchErrors) errorSummary[`${e.provider}:${e.code}`] = (errorSummary[`${e.provider}:${e.code}`] ?? 0) + 1;
+  const reviewSummary: Record<string, number> = {};
+  for (const r of result.review ?? []) reviewSummary[`${r.problem}:${r.action}`] = (reviewSummary[`${r.problem}:${r.action}`] ?? 0) + 1;
   return {
     director: director.label,
     scenes: result.plans.length,
     clips: result.selections.length,
+    review: reviewSummary,
     warnings: result.warnings.slice(0, 50),
     searchErrors: errorSummary,
     ai: usage.totals,
@@ -308,7 +315,8 @@ async function runRenderJob(job: JobRow, signal: AbortSignal) {
   else if (settings.musicTrack !== "none") music = await new LocalLibraryMusicProvider().resolve(settings.musicTrack);
 
   const format = job.format ?? "landscape";
-  const timeline = buildTimeline({ plans: edit.plans, selections, transcript, settings, format, voicePath: audio.path, musicPath: music });
+  const resolveTrack = (key: string) => (existsSync(library.music(key)) ? library.music(key) : null);
+  const timeline = buildTimeline({ plans: edit.plans, selections, transcript, settings, format, voicePath: audio.path, musicPath: music, resolveTrack });
   const outPath = path.join(ROOT, "renders", `${job.id}.mp4`);
   const result = await renderTimeline(timeline, {
     workDir: path.join(ROOT, "render", job.id),

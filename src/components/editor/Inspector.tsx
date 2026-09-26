@@ -76,13 +76,19 @@ export function Inspector({
         {tab === "Visual" &&
           (clip ? (
             <>
-              <div className="aspect-video rounded bg-black bg-contain bg-center bg-no-repeat" style={{ backgroundImage: clip.asset.thumbnailUrl ? `url(${clip.asset.thumbnailUrl})` : undefined }} />
+              {clip.asset.provider === "graphic" ? (
+                <CardPreview asset={clip.asset} />
+              ) : (
+                <div className="aspect-video rounded bg-black bg-contain bg-center bg-no-repeat" style={{ backgroundImage: clip.asset.thumbnailUrl ? `url(${clip.asset.thumbnailUrl})` : undefined }} />
+              )}
               <div className="flex items-center justify-between">
                 <span className="truncate text-xs" title={clip.asset.title}>
-                  {clip.asset.title}
+                  {clip.asset.provider === "graphic" ? "Designed text card" : clip.asset.title}
                 </span>
                 <RightsBadge status={clip.asset.rightsStatus} />
               </div>
+              <WhyThisVisual clip={clip} />
+
               <Button variant="primary" className="w-full" onClick={() => onReplace(clip)}>
                 Replace · Find Better Footage
               </Button>
@@ -155,6 +161,7 @@ export function Inspector({
             <div className="space-y-2 border-t border-line pt-3">
               <Label>Music</Label>
               <Select value={settings.musicTrack} disabled={busy} onChange={(e) => void saveSettings({ musicTrack: e.target.value })}>
+                <option value="auto">Story-driven — changes with the mood (recommended)</option>
                 {MUSIC_TRACKS.map((t) => (
                   <option key={t.key} value={t.key}>
                     {t.name} (royalty-safe, generated)
@@ -226,11 +233,16 @@ export function Inspector({
                 <Field k="Chosen by" v={clip.selectedBy} />
                 <Field k="Need" v={`${clip.needType} — ${clip.needDescription}`} />
                 <Field k="Queries" v={clip.queries.join(" · ")} />
-                {clip.overall !== null && <Field k="Overall score" v={String(clip.overall)} />}
-                {clip.scores && Object.entries(clip.scores).map(([k, v]) => <Field key={k} k={k} v={String(Math.round(Number(v)))} />)}
+                {clip.overall !== null && <Field k="Relevance" v={`${clip.overall} / 100`} />}
+                {clip.scores && "entityMatch" in clip.scores ? (
+                  <RelevanceBreakdown scores={clip.scores} />
+                ) : (
+                  clip.scores && Object.entries(clip.scores).map(([k, v]) => <Field key={k} k={k} v={String(Math.round(Number(v)))} />)
+                )}
                 <p className="text-muted">{clip.reason}</p>
               </div>
             )}
+            {plan?.storyboard && <StoryboardView sb={plan.storyboard} clipId={clip?.clipId ?? null} />}
             {plan && (
               <div className="space-y-1 border-t border-line pt-3">
                 <div className="font-semibold">Scene {plan.sceneId}</div>
@@ -440,6 +452,111 @@ function AnnotationEditor({ clip, busy, onSave }: { clip: Clip; busy: boolean; o
           Add
         </Button>
       </div>
+    </div>
+  );
+}
+
+/** Client-side read of a designed card's content (see pipeline/cards.ts). */
+export function cardContent(asset: Clip["asset"]): { kind: string; text: string; sub: string | null } {
+  try {
+    const c = JSON.parse(asset.description ?? "") as { kind?: string; text?: string; sub?: string | null };
+    if (c.text) return { kind: c.kind ?? "chapter", text: c.text, sub: c.sub ?? null };
+  } catch {
+    // older rows
+  }
+  return { kind: asset.categories[0] ?? "chapter", text: asset.title, sub: null };
+}
+
+function CardPreview({ asset }: { asset: Clip["asset"] }) {
+  const c = cardContent(asset);
+  const light = c.kind === "quote" || c.kind === "year" || c.kind === "chapter";
+  return (
+    <div className={cx("flex aspect-video flex-col items-center justify-center rounded px-4 text-center", light ? "bg-[#e9e2d3] text-[#1d1a14]" : "bg-[#17181b] text-white")}>
+      <div className="font-[Anton,Impact,sans-serif] text-2xl leading-tight tracking-wide">{c.text}</div>
+      {c.sub && <div className="mt-2 text-[10px] uppercase tracking-wider opacity-70">{c.sub}</div>}
+    </div>
+  );
+}
+
+/** Section 27: why the editor chose this visual, in plain words, with its confidence. */
+function WhyThisVisual({ clip }: { clip: Clip }) {
+  const conf = clip.scores && "confidence" in clip.scores ? Number(clip.scores.confidence) : null;
+  const tone = conf === null ? "text-muted" : conf >= 0.6 ? "text-ok" : conf >= 0.4 ? "text-accent" : "text-danger";
+  return (
+    <div className="rounded border border-line bg-panel-2 p-2 text-xs">
+      <div className="mb-1 flex items-center justify-between">
+        <span className="font-semibold">Why this visual</span>
+        {conf !== null && <span className={tone}>confidence {Math.round(conf * 100)}%</span>}
+      </div>
+      <p className="text-muted">{clip.reason || "No reason recorded."}</p>
+    </div>
+  );
+}
+
+const SCORE_PARTS: [string, string, number][] = [
+  ["entityMatch", "Named person/place/thing", 30],
+  ["eventMatch", "Event", 25],
+  ["timeMatch", "Time period", 15],
+  ["topicMatch", "Topic & place", 15],
+  ["visualMatch", "Right kind of visual", 10],
+  ["quality", "Quality", 5],
+];
+
+function RelevanceBreakdown({ scores }: { scores: Record<string, number> }) {
+  return (
+    <div className="space-y-1">
+      {SCORE_PARTS.map(([k, label, max]) => (
+        <div key={k} className="flex items-center gap-2">
+          <span className="w-36 shrink-0 text-muted">{label}</span>
+          <div className="h-1.5 flex-1 overflow-hidden rounded bg-panel-2">
+            <div className="h-full bg-accent" style={{ width: `${Math.min(100, (Number(scores[k] ?? 0) / max) * 100)}%` }} />
+          </div>
+          <span className="w-10 text-right tabular-nums">
+            {Math.round(Number(scores[k] ?? 0))}/{max}
+          </span>
+        </div>
+      ))}
+      {Number(scores.penalty ?? 0) > 0 && <Field k="Penalties" v={`−${Math.round(Number(scores.penalty))} (wrong place/era, repetition, avoid-list)`} />}
+    </div>
+  );
+}
+
+/** The editor's plan for the scene: what it is doing, how it should feel, and the beat plan. */
+function StoryboardView({ sb, clipId }: { sb: NonNullable<ScenePlan["storyboard"]>; clipId: string | null }) {
+  const beatIndex = clipId ? Number(clipId.match(/_c(\d+)/)?.[1] ?? 0) - 1 : -1;
+  return (
+    <div className="space-y-1 border-t border-line pt-3">
+      <div className="font-semibold">Storyboard</div>
+      <Field k="Editorial intent" v={`${sb.intent.replace(/_/g, " ")}${sb.intents.length > 1 ? ` (${sb.intents.filter((i) => i !== sb.intent).join(", ").replace(/_/g, " ")})` : ""}`} />
+      <Field k="Viewer should feel" v={sb.feel} />
+      <div className="flex items-center gap-2">
+        <span className="w-28 shrink-0 text-muted">Intensity</span>
+        <div className="flex flex-1 gap-0.5">
+          {Array.from({ length: 10 }, (_, i) => (
+            <div key={i} className={cx("h-2 flex-1 rounded-sm", i < sb.intensity ? (sb.intensity >= 8 ? "bg-danger" : sb.intensity >= 5 ? "bg-accent" : "bg-ok") : "bg-panel-2")} />
+          ))}
+        </div>
+        <span className="w-8 text-right">{sb.intensity}/10</span>
+      </div>
+      <Field k="Pacing" v={sb.pacing} />
+      <Field k="Music" v={sb.musicMood} />
+      <Field k="Visual goal" v={sb.visualGoal} />
+      <Field k="Transition" v={sb.transitionReason} />
+      <Field k="Sound design" v={sb.sfxDirection} />
+      <Field k="Memes" v={sb.memeReason} />
+      {sb.entities.length > 0 && <Field k="Entities" v={sb.entities.map((e) => `${e.name} (${e.kind})`).join(", ")} />}
+      <details className="pt-1">
+        <summary className="cursor-pointer text-muted">Beat plan ({sb.beats.length})</summary>
+        <ol className="mt-1 space-y-1">
+          {sb.beats.map((b, i) => (
+            <li key={i} className={cx("rounded px-1.5 py-1", i === beatIndex ? "bg-accent/15" : "bg-panel-2")}>
+              <span className="font-medium">{b.visualType.replace(/_/g, " ")}</span>
+              {b.focus && <span> · {b.focus}</span>} <span className="text-muted">({(b.end - b.start).toFixed(1)}s, {b.cut})</span>
+              <div className="text-muted">“{b.text}”</div>
+            </li>
+          ))}
+        </ol>
+      </details>
     </div>
   );
 }

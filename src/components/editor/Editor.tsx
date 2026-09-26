@@ -195,7 +195,7 @@ export function Editor({ projectId }: { projectId: string }) {
   const plan = edit?.plans.find((x) => x.sceneId === (selectedScene ?? clip?.sceneId)) ?? null;
   const pj = status.pipelineJob;
   const rj = status.renderJob;
-  const music = MUSIC_TRACKS.find((t) => t.key === p.settings.musicTrack)?.name ?? (p.settings.musicTrack === "uploaded" ? "Uploaded music" : "No music");
+  const music = p.settings.musicTrack === "auto" ? "Story-driven" : (MUSIC_TRACKS.find((t) => t.key === p.settings.musicTrack)?.name ?? (p.settings.musicTrack === "uploaded" ? "Uploaded music" : "No music"));
   const hasEdit = Boolean(edit?.clips.length);
   const canLive = Boolean(hasEdit && status.narrationUrl);
   const mode = watchMode ?? (status.latestExport?.url ? "render" : "live");

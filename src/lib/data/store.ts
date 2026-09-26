@@ -6,6 +6,7 @@ import {
   NormalizedAsset as NormalizedAssetSchema,
   type ScenePlan,
   ScenePlan as ScenePlanSchema,
+  Transition as TransitionSchema,
 } from "@/lib/domain/types";
 import { type CachedSearch, type SearchCache, searchCacheTtlMs, stableHash } from "@/lib/media/cache";
 import type { GenerateResult, SceneSelection } from "@/lib/pipeline/generate";
@@ -248,7 +249,7 @@ export function selectionToRow(ctx: { userId: string; projectId: string }, s: Sc
     queries: s.queries,
     layout: s.layout,
     motion: { type: s.motion, intensity: s.motionIntensity },
-    treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite },
+    treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite, transitionIn: s.transitionIn ?? null },
     annotations: s.annotations,
     alternates: s.alternates,
     scores: s.scores,
@@ -313,6 +314,7 @@ export async function loadEdit(db: SupabaseClient, projectId: string, opts: { al
       motion: motion.type,
       motionIntensity: motion.intensity,
       blackAndWhite: Boolean(r.treatment?.blackAndWhite),
+      transitionIn: TransitionSchema.safeParse(r.treatment?.transitionIn).data,
       annotations: r.annotations ?? [],
       trimStart: Number(r.trim_start),
     } as LoadedEdit["selections"][number];

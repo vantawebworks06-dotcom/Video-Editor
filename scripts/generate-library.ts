@@ -84,15 +84,23 @@ async function overlays() {
 async function sfx() {
   const src = (expr: string, d: number) => ["-f", "lavfi", "-i", `aevalsrc='${expr}':s=48000:d=${d}`];
   const common = ["-ac", "2", "-ar", "48000"];
-  await make(library.sfx("whoosh"), [...src("(random(0)*2-1)*pow(sin(PI*t/0.7),2)", 0.7), "-af", "bandpass=f=900:w=1400,highpass=f=200,volume=2.2,afade=t=out:st=0.55:d=0.15", ...common]);
+  await make(library.sfx("whoosh"), [...src("(random(0)*2-1)*pow(sin(PI*t/0.7),2)", 0.7), "-af", "bandpass=f=900:t=h:w=1400,highpass=f=200,volume=1.6,afade=t=out:st=0.55:d=0.15", ...common]);
   await make(library.sfx("impact"), [...src("0.9*sin(2*PI*(48+180*exp(-t*25))*t)*exp(-t*5)+0.5*(random(0)*2-1)*exp(-t*45)", 1.2), "-af", "lowpass=f=5000,volume=1.4", ...common]);
   await make(library.sfx("click"), [...src("(random(0)*2-1)*exp(-t*350)", 0.06), "-af", "highpass=f=1800,volume=1.6", ...common]);
   await make(library.sfx("camera_shutter"), [...src("(random(0)*2-1)*(exp(-t*120)+0.8*exp(-abs(t-0.09)*140)*gte(t,0.09))", 0.25), "-af", "highpass=f=1200,volume=1.6", ...common]);
   await make(library.sfx("paper"), [...src("(random(0)*2-1)*(0.25+0.75*abs(sin(2*PI*6*t)*sin(2*PI*2.3*t)))*exp(-t*1.8)", 0.8), "-af", "highpass=f=1500,lowpass=f=9000,volume=1.3", ...common]);
   await make(library.sfx("notification"), [...src("0.5*sin(2*PI*880*t)*exp(-t*9)*lt(t,0.18)+0.5*sin(2*PI*1320*(t-0.15))*exp(-(t-0.15)*8)*gte(t,0.15)", 0.6), ...common]);
-  await make(library.sfx("crowd"), [...src("(random(0)*2-1)*(0.6+0.4*sin(2*PI*0.4*t))*min(1,t)*min(1,(3-t))", 3), "-af", "bandpass=f=900:w=1800,volume=1.2", ...common]);
+  await make(library.sfx("crowd"), [...src("(random(0)*2-1)*(0.6+0.4*sin(2*PI*0.4*t))*min(1,t)*min(1,(3-t))", 3), "-af", "bandpass=f=900:t=h:w=1800,volume=0.9", ...common]);
   await make(library.sfx("bass_hit"), [...src("sin(2*PI*(42+60*exp(-t*12))*t)*exp(-t*3)", 1.6), "-af", "lowpass=f=300,volume=1.8", ...common]);
   await make(library.sfx("riser"), [...src("(0.45*sin(2*PI*(150*t+220*t*t))+0.35*(random(0)*2-1))*pow(t/2,2)", 2), "-af", "highpass=f=120,volume=1.4,afade=t=out:st=1.9:d=0.1", ...common]);
+  // Story-driven additions (storyboard sfx direction).
+  await make(library.sfx("typing"), [...src("(random(0)*2-1)*exp(-mod(t,0.13)*90)*lt(mod(t*7.3,1),0.8)", 1.2), "-af", "highpass=f=1500,lowpass=f=8000,volume=0.7", ...common]);
+  await make(library.sfx("vinyl"), [...src("0.05*(random(0)*2-1)+0.5*(random(0)*2-1)*lt(random(0),0.004)", 2.5), "-af", "highpass=f=700,lowpass=f=6000,volume=1.2,afade=t=in:d=0.2,afade=t=out:st=2.1:d=0.4", ...common]);
+  await make(library.sfx("radio_static"), [...src("(random(0)*2-1)*(0.6+0.4*sin(2*PI*7*t))+0.2*sin(2*PI*1200*t)*lt(mod(t,0.4),0.05)", 1.4), "-af", "bandpass=f=2200:t=h:w=2600,volume=0.9,afade=t=out:st=1.1:d=0.3", ...common]);
+  await make(library.sfx("record_scratch"), [...src("(random(0)*2-1)*sin(PI*t/0.45)*(0.5+0.5*sin(2*PI*(30-50*t)*t))", 0.45), "-af", "bandpass=f=1400:t=h:w=2000,volume=1.6", ...common]);
+  await make(library.sfx("heartbeat"), [...src("sin(2*PI*50*t)*(exp(-mod(t,0.95)*18)+0.7*exp(-abs(mod(t,0.95)-0.28)*22)*gte(mod(t,0.95),0.28))", 3.8), "-af", "lowpass=f=160,volume=1.2", ...common]);
+  await make(library.sfx("glitch"), [...src("(random(0)*2-1)*lt(mod(t*23,1),0.5)*exp(-t*6)+0.4*sin(2*PI*(900+800*lt(mod(t*9,1),0.5))*t)*exp(-t*7)", 0.45), "-af", "volume=0.6", ...common]);
+  await make(library.sfx("news_ambience"), [...src("0.12*(random(0)*2-1)*(0.7+0.3*sin(2*PI*0.7*t))+0.05*sin(2*PI*1000*t)*lt(mod(t,1.9),0.04)", 3), "-af", "bandpass=f=1300:t=h:w=2000,volume=2.6,afade=t=in:d=0.3,afade=t=out:st=2.4:d=0.6", ...common]);
 }
 
 async function music() {
@@ -113,6 +121,48 @@ async function music() {
     `aevalsrc='0.2*sin(2*PI*(196+49*gte(mod(t,4.8),2.4))*t)*exp(-mod(t,0.6)*6)+0.08*sin(2*PI*98*t)':s=48000:d=${d}`,
     "-af", `lowpass=f=2500,aecho=0.8:0.6:300:0.3,${loopFade}`, "-ac", "2", "-c:a", "aac", "-b:a", "160k",
   ]);
+  // Mood beds for the story-driven music direction (see pipeline/music.ts).
+  const bed = (name: string, expr: string, af: string) =>
+    make(library.music(name), ["-f", "lavfi", "-i", `aevalsrc='${expr}':s=48000:d=${d}`, "-af", `${af},${loopFade}`, "-ac", "2", "-c:a", "aac", "-b:a", "160k"]);
+  // Dark / aggressive: low kick pulse at 80 bpm, sub bass, metallic hits every bar.
+  await bed(
+    "dark_pulse",
+    "0.55*sin(2*PI*(45+90*exp(-mod(t,0.75)*28))*t)*exp(-mod(t,0.75)*7)+0.16*sin(2*PI*41.2*t)+0.1*sin(2*PI*82.4*t)*(0.5+0.5*sin(2*PI*0.25*t))+0.12*(random(0)*2-1)*exp(-mod(t+1.5,3)*14)",
+    "lowpass=f=1800,aecho=0.8:0.5:250:0.2",
+  );
+  // Suspenseful: clock tick over a beating (dissonant) low drone and a slow pulse.
+  await bed(
+    "suspense_tick",
+    "0.1*sin(2*PI*2400*t)*exp(-mod(t,0.5)*90)+0.16*sin(2*PI*55*t)+0.12*sin(2*PI*58.3*t)+0.2*sin(2*PI*48*t)*exp(-mod(t,1)*9)",
+    "lowpass=f=3200,aecho=0.8:0.7:350:0.25",
+  );
+  // Sad / reflective: slow piano-like minor chords (Am – F – C – G), one per 4 s.
+  const chord = (a: number, b: number, c: number) => `(sin(2*PI*${a}*t)+0.8*sin(2*PI*${b}*t)+0.7*sin(2*PI*${c}*t))`;
+  const env = "(1-exp(-mod(t,4)*6))*exp(-mod(t,4)*0.45)";
+  await bed(
+    "sad_keys",
+    `0.13*${env}*if(lt(mod(t,16),4),${chord(220, 261.63, 329.63)},if(lt(mod(t,16),8),${chord(174.61, 220, 261.63)},if(lt(mod(t,16),12),${chord(130.81, 164.81, 196)},${chord(196, 246.94, 293.66)})))`,
+    "lowpass=f=2400,aecho=0.8:0.8:500|900:0.35|0.25",
+  );
+  // Triumphant: bright major progression (C – G – Am – F) with an eighth-note pulse.
+  const pulse = "(0.55+0.45*exp(-mod(t,0.375)*6))";
+  await bed(
+    "triumph_rise",
+    `0.12*${pulse}*if(lt(mod(t,8),2),${chord(261.63, 329.63, 392)},if(lt(mod(t,8),4),${chord(196, 246.94, 293.66)},if(lt(mod(t,8),6),${chord(220, 261.63, 329.63)},${chord(174.61, 220, 261.63)})))+0.1*sin(2*PI*65.4*t)`,
+    "lowpass=f=4200,aecho=0.8:0.6:300:0.25",
+  );
+  // Energetic: 100 bpm kick, off-beat hats and a two-note bass line.
+  await bed(
+    "energy_beat",
+    "0.5*sin(2*PI*(50+100*exp(-mod(t,0.6)*30))*t)*exp(-mod(t,0.6)*9)+0.07*(random(0)*2-1)*exp(-mod(t+0.3,0.6)*60)+0.14*sin(2*PI*(55+10*gte(mod(t,2.4),1.2))*t)*(0.6+0.4*exp(-mod(t,0.3)*5))",
+    "lowpass=f=6000",
+  );
+  // Mysterious: sparse bells over a soft low drone.
+  await bed(
+    "mystery_bells",
+    "0.12*sin(2*PI*73.4*t)*(0.7+0.3*sin(2*PI*0.07*t))+0.09*(sin(2*PI*880*t)+0.5*sin(2*PI*1318.5*t))*exp(-mod(t,2.7)*2.2)+0.06*sin(2*PI*659.25*t)*exp(-mod(t+1.35,5.4)*1.8)",
+    "lowpass=f=5000,aecho=0.8:0.85:600|1100:0.4|0.3",
+  );
 }
 
 async function fonts() {

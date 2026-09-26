@@ -88,7 +88,7 @@ export function ReviewPanel({
                 <td className="w-36 p-2">
                   <div className="relative flex aspect-video w-32 items-center justify-center overflow-hidden rounded bg-black text-[10px] text-muted">
                     <Thumb src={c.asset.thumbnailUrl} />
-                    {own ? "Your footage" : !c.asset.thumbnailUrl ? c.asset.type : null}
+                    {own ? "Your footage" : c.asset.provider === "graphic" ? <span className="px-1 text-center font-semibold text-white">{c.asset.title}</span> : !c.asset.thumbnailUrl ? c.asset.type : null}
                   </div>
                   <div className="mt-1 flex flex-wrap gap-1">
                     <Tag tone={c.role === "meme" ? "accent" : "default"}>{c.role === "meme" ? "reaction" : c.asset.type}</Tag>

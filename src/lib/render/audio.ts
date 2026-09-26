@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import type { Timeline } from "@/lib/domain/types";
+import { gainExpression } from "@/lib/pipeline/music";
 import { library } from "./library";
 
 export interface AudioGraph {
@@ -33,8 +34,11 @@ export function buildAudioGraph(t: Timeline, firstInput: number): AudioGraph {
   }
 
   // Ducking: higher strength → harder ratio, lower threshold.
-  const ratio = (2 + mix.duckingStrength * 14).toFixed(2);
-  const threshold = (0.1 - mix.duckingStrength * 0.085).toFixed(4);
+  // Measured: the old 12:1 ducking left music ~25 dB under the voice — inaudible. Documentary beds
+  // sit ~12-15 dB under narration and rise in the pauses; this keeps the voice on top without
+  // burying the score.
+  const ratio = (1.5 + mix.duckingStrength * 2.5).toFixed(2);
+  const threshold = (0.15 - mix.duckingStrength * 0.05).toFixed(4);
 
   const bed = (file: string | null, volume: number, label: string, key: string) => {
     if (!file || volume <= 0) return;
@@ -48,11 +52,34 @@ export function buildAudioGraph(t: Timeline, firstInput: number): AudioGraph {
     }
     buses.push(`[${label}]`);
   };
-  bed(t.audio.music, mix.musicVolume, "music", "vkey1");
+  const musicCues = (t.audio.musicCues ?? []).filter((c) => c.end - c.start > 0.5 && existsSync(c.file));
+  if (musicCues.length && mix.musicVolume > 0) {
+    // Story-driven music: each section is its own input — trimmed, levelled, shaped by its gain
+    // envelope (intensity curve), faded in/out for crossfades, delayed into place — then summed
+    // and ducked under the voice like a single bed.
+    const labels: string[] = [];
+    musicCues.forEach((c, k) => {
+      inputs.push("-stream_loop", "-1", "-i", c.file);
+      const i = n++;
+      const len = c.end - c.start;
+      const ms = Math.round(c.start * 1000);
+      const gain = `volume='${gainExpression(c.gains)}':eval=frame`;
+      const fades = `afade=t=in:d=${Math.min(c.fadeIn, len / 2).toFixed(3)},afade=t=out:st=${Math.max(0, len - c.fadeOut).toFixed(3)}:d=${Math.min(c.fadeOut, len / 2).toFixed(3)}`;
+      filters.push(`[${i}:a]${fmt},atrim=start=${c.offset.toFixed(3)}:duration=${len.toFixed(3)},asetpts=PTS-STARTPTS,volume=${(mix.musicVolume * c.trim).toFixed(3)},${gain},${fades},adelay=${ms}|${ms}[mc${k}]`);
+      labels.push(`[mc${k}]`);
+    });
+    filters.push(`${labels.join("")}amix=inputs=${labels.length}:normalize=0:duration=longest:dropout_transition=0,apad,atrim=0:${D}[musicraw]`);
+    if (voiceKey) filters.push(`[musicraw][vkey1]sidechaincompress=threshold=${threshold}:ratio=${ratio}:attack=15:release=450:makeup=1[music]`);
+    else filters.push(`[musicraw]anull[music]`);
+    buses.push("[music]");
+  } else {
+    bed(t.audio.music, mix.musicVolume, "music", "vkey1");
+  }
   bed(t.audio.ambience, mix.ambienceVolume, "amb", "vkey2");
   if (voiceKey) {
     // Consume unused sidechain keys so the graph has no dangling outputs.
-    if (!t.audio.music || mix.musicVolume <= 0) filters.push(`[vkey1]anullsink`);
+    const cuesUsed = (t.audio.musicCues ?? []).some((c) => c.end - c.start > 0.5 && existsSync(c.file)) && mix.musicVolume > 0;
+    if (!cuesUsed && (!t.audio.music || mix.musicVolume <= 0)) filters.push(`[vkey1]anullsink`);
     if (!t.audio.ambience || mix.ambienceVolume <= 0) filters.push(`[vkey2]anullsink`);
   }
 

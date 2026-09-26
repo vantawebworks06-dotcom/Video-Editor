@@ -181,9 +181,23 @@ export const Timeline = memo(function Timeline({
             </div>
             {/* music */}
             <div className={ROW}>
-              <span className="absolute inset-y-2 left-0 flex items-center rounded bg-[#b56cf0]/20 px-2 text-[10px] text-[#c99af5]" style={{ width }}>
-                {musicLabel} · ducked under narration
-              </span>
+              {musicLabel === "Story-driven" && data.plans.some((p) => p.storyboard) ? (
+                // Story-driven music: one block per mood section, brighter where the story is more intense.
+                moodSections(data.plans).map((m) => (
+                  <span
+                    key={m.start}
+                    title={`${m.mood} · intensity ${m.intensity}/10`}
+                    className="absolute inset-y-2 flex items-center overflow-hidden rounded border-l border-[#b56cf0] px-1.5 text-[10px] whitespace-nowrap text-[#e2c8fb]"
+                    style={{ left: x(m.start), width: Math.max(2, x(m.end) - x(m.start)), background: `rgba(181,108,240,${0.12 + m.intensity * 0.045})` }}
+                  >
+                    {m.mood}
+                  </span>
+                ))
+              ) : (
+                <span className="absolute inset-y-2 left-0 flex items-center rounded bg-[#b56cf0]/20 px-2 text-[10px] text-[#c99af5]" style={{ width }}>
+                  {musicLabel} · ducked under narration
+                </span>
+              )}
             </div>
             <PlayheadLine store={playhead} zoom={zoom} />
           </div>
@@ -192,3 +206,18 @@ export const Timeline = memo(function Timeline({
     </div>
   );
 });
+
+/** Consecutive scenes sharing a music mood (mirrors the render's music sections closely enough to review). */
+function moodSections(plans: EditData["plans"]): { start: number; end: number; mood: string; intensity: number }[] {
+  const out: { start: number; end: number; mood: string; intensity: number }[] = [];
+  for (const p of plans) {
+    const mood = p.storyboard?.musicMood ?? "neutral";
+    const I = p.storyboard?.intensity ?? 3;
+    const last = out.at(-1);
+    if (last && last.mood === mood) {
+      last.end = p.endTime;
+      last.intensity = Math.max(last.intensity, I);
+    } else out.push({ start: p.startTime, end: p.endTime, mood, intensity: I });
+  }
+  return out;
+}

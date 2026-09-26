@@ -28,6 +28,8 @@ export const ProviderId = z.enum([
   "giphy",
   "uploaded",
   "library",
+  /** Designed card (name/year/quote/statistic) rendered by DocuCut itself — no media file. */
+  "graphic",
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
@@ -88,7 +90,7 @@ export const VisualStrategy = z.enum([
 ]);
 export type VisualStrategy = z.infer<typeof VisualStrategy>;
 
-export const VisualNeedType = z.enum(["video", "photo", "archival", "screenshot", "article", "reaction"]);
+export const VisualNeedType = z.enum(["video", "photo", "archival", "screenshot", "article", "reaction", "graphic"]);
 export type VisualNeedType = z.infer<typeof VisualNeedType>;
 
 export const MotionType = z.enum([
@@ -105,7 +107,12 @@ export const MotionType = z.enum([
 ]);
 export type MotionType = z.infer<typeof MotionType>;
 
-export const Transition = z.enum(["hard_cut", "flash", "fade"]);
+/**
+ * How a clip enters. Chosen from editorial context (never cycled): serious → hard_cut / fade /
+ * dip_to_black; energetic → zoom / whip; archival → film_burn / shutter; documents → paper;
+ * climaxes → flash / glitch.
+ */
+export const Transition = z.enum(["hard_cut", "flash", "fade", "dip_to_black", "zoom", "whip", "glitch", "film_burn", "shutter", "paper"]);
 export type Transition = z.infer<typeof Transition>;
 
 export const Layout = z.enum(["fullscreen", "paper_card", "polaroid", "article", "picture_in_picture"]);
@@ -124,6 +131,13 @@ export const SfxKind = z.enum([
   "crowd",
   "bass_hit",
   "riser",
+  "typing",
+  "vinyl",
+  "radio_static",
+  "record_scratch",
+  "heartbeat",
+  "glitch",
+  "news_ambience",
 ]);
 export type SfxKind = z.infer<typeof SfxKind>;
 
@@ -159,11 +173,71 @@ export type Transcript = z.infer<typeof Transcript>;
 // Scene plan (what the director decides per scene)
 // ---------------------------------------------------------------------------
 
+/** Editorial visual types the storyboard plans with (mapped onto searchable VisualNeedTypes). */
+export const EditorialVisualType = z.enum([
+  "archival_video",
+  "person_photo",
+  "location_photo",
+  "event_photo",
+  "news_screenshot",
+  "newspaper",
+  "social_screenshot",
+  "album_art",
+  "music_video_reference",
+  "interview",
+  "map",
+  "document",
+  "statistic_graphic",
+  "timeline_graphic",
+  "text_card",
+  "reaction_gif",
+  "meme",
+  "abstract_background",
+  "user_media",
+  "establishing_shot",
+  "b_roll",
+]);
+export type EditorialVisualType = z.infer<typeof EditorialVisualType>;
+
+/** Designed card content for graphic visuals (and the last-resort fallback of any visual). */
+export const CardSpec = z.object({
+  kind: z.enum(["name", "year", "quote", "statistic", "headline", "chapter"]),
+  text: z.string(),
+  sub: z.string().nullable(),
+});
+export type CardSpec = z.infer<typeof CardSpec>;
+
+export const VisualFallback = z.object({
+  visualType: EditorialVisualType,
+  queries: z.array(z.string()),
+  description: z.string(),
+  stockAllowed: z.boolean(),
+});
+export type VisualFallback = z.infer<typeof VisualFallback>;
+
 export const VisualNeed = z.object({
   type: VisualNeedType,
   queries: z.array(z.string()), // ranked, most useful first
   duration: z.number(),
   description: z.string(),
+  // --- editorial storyboard (absent on plans made before it existed) ---
+  visualType: EditorialVisualType.optional(),
+  /** Entity names the visual should show ("Vybz Kartel"); relevance is judged against them. */
+  entities: z.array(z.string()).optional(),
+  year: z.number().nullable().optional(),
+  /** Topic words of the beat ("press conference", "graffiti"). */
+  topic: z.array(z.string()).optional(),
+  /** Stock libraries (Pexels/Pixabay) may serve this beat (establishing shots, atmosphere). */
+  stockAllowed: z.boolean().optional(),
+  fallbacks: z.array(VisualFallback).optional(),
+  /** Designed card used when nothing relevant is found (or when the beat is a graphic). */
+  card: CardSpec.optional(),
+  avoid: z.array(z.string()).optional(),
+  transition: Transition.optional(),
+  /** Atmosphere that must be from the story's place (streets) vs. place-free (a microphone). */
+  local: z.boolean().optional(),
+  /** The beat's narration, shortened (used for text cards). */
+  line: z.string().optional(),
 });
 export type VisualNeed = z.infer<typeof VisualNeed>;
 
@@ -222,6 +296,68 @@ export const SceneAnalysis = z.object({
 });
 export type SceneAnalysis = z.infer<typeof SceneAnalysis>;
 
+export const EditorialIntent = z.enum([
+  "fact",
+  "historical_event",
+  "person",
+  "location",
+  "conflict",
+  "emotional",
+  "dramatic_reveal",
+  "transition",
+  "explanation",
+  "statistic",
+  "quote",
+  "interview",
+  "archival",
+  "political",
+  "cultural",
+  "comedic",
+  "ironic",
+  "suspense",
+  "buildup",
+  "climax",
+  "aftermath",
+]);
+export type EditorialIntent = z.infer<typeof EditorialIntent>;
+
+export const MusicMood = z.enum(["calm", "neutral", "mysterious", "tense", "dark", "sad", "triumphant", "energetic", "aggressive", "suspenseful", "comedic", "reflective"]);
+export type MusicMood = z.infer<typeof MusicMood>;
+
+export const StoryBeat = z.object({
+  start: z.number(), // absolute seconds
+  end: z.number(),
+  text: z.string(),
+  visualType: EditorialVisualType,
+  /** Entity the beat is about (explicit, or resolved from "he"/"his" to the last person). */
+  focus: z.string().nullable(),
+  description: z.string(),
+  queries: z.array(z.string()),
+  /** Why the beat starts here ("cue: but", "clause", "rapid sequence"). */
+  cut: z.string(),
+});
+export type StoryBeat = z.infer<typeof StoryBeat>;
+
+/** The editor's plan for a scene, made before any search (see storyboard.ts). */
+export const Storyboard = z.object({
+  intent: EditorialIntent,
+  intents: z.array(EditorialIntent),
+  feel: z.string(),
+  /** Narrative intensity 1-10 on the whole-video curve. */
+  intensity: z.number(),
+  pacing: z.enum(["slow", "normal", "fast", "rapid"]),
+  musicMood: MusicMood,
+  visualGoal: z.string(),
+  context: z.object({ previous: z.string().nullable(), next: z.string().nullable(), section: z.string() }),
+  entities: z.array(z.object({ name: z.string(), kind: z.string() })),
+  avoid: z.array(z.string()),
+  sfxDirection: z.string(),
+  transitionReason: z.string(),
+  memeReason: z.string(),
+  beats: z.array(StoryBeat),
+});
+export type Storyboard = z.infer<typeof Storyboard>;
+
 export const ScenePlan = z.object({
   sceneId: z.string(),
   startTime: z.number(),
@@ -237,6 +373,7 @@ export const ScenePlan = z.object({
   transition: Transition,
   sfx: z.array(SfxCue),
   analysis: SceneAnalysis.optional(),
+  storyboard: Storyboard.optional(),
 });
 export type ScenePlan = z.infer<typeof ScenePlan>;
 
@@ -273,6 +410,8 @@ export const VisualClip = z.object({
   treatment: z.object({ blackAndWhite: z.boolean(), grain: z.boolean() }),
   annotations: z.array(Annotation),
   transitionIn: Transition,
+  /** Set on the clip before a dip_to_black so it fades out as the next one fades in. */
+  transitionOut: Transition.optional(),
   role: z.enum(["primary", "meme"]),
 });
 export type VisualClip = z.infer<typeof VisualClip>;
@@ -306,6 +445,24 @@ export const AudioMix = z.object({
 });
 export type AudioMix = z.infer<typeof AudioMix>;
 
+/** One section of story-driven music: a bed, where it plays, and its gain envelope. */
+export const MusicCue = z.object({
+  file: z.string(),
+  label: z.string(),
+  mood: MusicMood.nullable(),
+  start: z.number(),
+  end: z.number(),
+  /** Seconds into the track to start from (varied so a re-used bed doesn't restart identically). */
+  offset: z.number(),
+  fadeIn: z.number(),
+  fadeOut: z.number(),
+  /** Loudness trim for this bed (beds are levelled against each other). */
+  trim: z.number(),
+  /** Gain points relative to the cue start, following the intensity curve. */
+  gains: z.array(z.object({ t: z.number(), g: z.number() })),
+});
+export type MusicCue = z.infer<typeof MusicCue>;
+
 export const Timeline = z.object({
   version: z.literal(1),
   width: z.number(),
@@ -326,6 +483,8 @@ export const Timeline = z.object({
   audio: z.object({
     voice: z.string().nullable(), // local path or URL of narration
     music: z.string().nullable(),
+    /** Story-driven music sections; when present they replace `music`. */
+    musicCues: z.array(MusicCue).optional(),
     ambience: z.string().nullable(),
     sfx: z.array(SfxClip),
     mix: AudioMix,
@@ -357,7 +516,7 @@ export const ProjectSettings = z.object({
   enabledProviders: z.array(ProviderId),
   mix: AudioMix,
   gifRating: z.enum(["g", "pg", "pg-13"]),
-  /** Built-in royalty-safe bed key, "uploaded" (project music file) or "none". */
+  /** "auto" (story-driven: the bed follows each section's mood), a built-in bed key, "uploaded" or "none". */
   musicTrack: z.string(),
   /** Narration video: "replace" hides its picture; "mix" cuts back to the speaker (interview + B-roll). */
   originalFootage: z.enum(["replace", "mix"]),
@@ -383,7 +542,7 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   enabledProviders: ["pexels", "pixabay", "wikimedia", "internet_archive", "giphy"],
   mix: DEFAULT_MIX,
   gifRating: "pg",
-  musicTrack: "ambient_pad",
+  musicTrack: "auto",
   originalFootage: "replace",
 };
 

@@ -20,7 +20,9 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "tsx --env-file-if-exists=.env.local scripts/e2e.ts",
     "test:autoedit": "tsx --env-file-if-exists=.env.local scripts/e2e-autoedit.ts",
-    "bench": "tsx --env-file-if-exists=.env.local scripts/bench.ts"
+    "bench": "tsx --env-file-if-exists=.env.local scripts/bench.ts",
+    "report:editorial": "tsx --env-file-if-exists=.env.local scripts/editorial-report.ts",
+    "render:editorial": "tsx --env-file-if-exists=.env.local scripts/editorial-render.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

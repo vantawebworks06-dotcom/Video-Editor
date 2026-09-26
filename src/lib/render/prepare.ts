@@ -7,7 +7,9 @@ import type { AssetRef } from "@/lib/domain/types";
 import { stableHash } from "@/lib/media/cache";
 import { internetArchive } from "@/lib/media/providers";
 import { USER_AGENT } from "@/lib/media/providers/http";
+import { CARD_TEXTURE, GRAPHIC_URL_PREFIX } from "@/lib/pipeline/cards";
 import { isAllowedMediaUrl, NETWORK_INPUT_ARGS, probe, runFfmpeg } from "./ffmpeg";
+import { library } from "./library";
 
 export interface PreparedAsset {
   path: string;
@@ -125,6 +127,13 @@ export async function prepareAsset(
   ctx: PrepareContext,
 ): Promise<PreparedAsset> {
   await mkdir(ctx.cacheDir, { recursive: true });
+  // Designed text cards: the texture is the picture; the text is drawn with the other overlays.
+  if (ref.url.startsWith(GRAPHIC_URL_PREFIX)) {
+    const kind = ref.url.slice(GRAPHIC_URL_PREFIX.length) as keyof typeof CARD_TEXTURE;
+    const file = library.texture(CARD_TEXTURE[kind] ?? "dark_paper");
+    const info = await probe(file);
+    return { path: file, kind: "image", width: info.width ?? 1920, height: info.height ?? 1080, duration: null, alpha: false };
+  }
   const local = (await ctx.resolveLocal?.(ref)) ?? ref.localPath;
   const isStill = ref.type === "photo";
   const isSticker = ref.type === "sticker";

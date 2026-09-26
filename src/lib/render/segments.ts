@@ -23,7 +23,7 @@ export interface SegmentSpec {
 
 export function segmentKey(s: SegmentSpec): string {
   // Only visual properties matter: the same look at a different time/position reuses the segment.
-  const visual = { duration: s.clip.duration, trimStart: s.clip.trimStart, layout: s.clip.layout, motion: s.clip.motion, treatment: s.clip.treatment, annotations: s.clip.annotations, transitionIn: s.clip.transitionIn, role: s.clip.role, seed: s.clip.id + s.clip.asset.assetId };
+  const visual = { duration: s.clip.duration, trimStart: s.clip.trimStart, layout: s.clip.layout, motion: s.clip.motion, treatment: s.clip.treatment, annotations: s.clip.annotations, transitionIn: s.clip.transitionIn, transitionOut: s.clip.transitionOut, role: s.clip.role, seed: s.clip.id + s.clip.asset.assetId };
   return stableHash({
     v: RENDERER_VERSION,
     visual,
@@ -158,6 +158,45 @@ function annotate(
   return cur;
 }
 
+/**
+ * Transition effects applied to the start of the incoming clip (and the end of the outgoing one
+ * for dip-to-black). Each is short: an editor's transition is felt, not watched.
+ */
+export function transitionFilters(t: VisualClip["transitionIn"], seconds: number, out?: VisualClip["transitionOut"]): string {
+  let f = "";
+  switch (t) {
+    case "flash":
+      f += ",fade=t=in:st=0:d=0.16:color=white";
+      break;
+    case "fade":
+      f += ",fade=t=in:st=0:d=0.35";
+      break;
+    case "dip_to_black":
+      f += ",fade=t=in:st=0:d=0.4";
+      break;
+    case "shutter":
+      f += ",fade=t=in:st=0:d=0.09";
+      break;
+    case "film_burn":
+      f += ",fade=t=in:st=0:d=0.45:color=0xFF9A3C,noise=alls=28:allf=t:enable='lt(t,0.5)',eq=brightness=0.06:saturation=1.25:enable='lt(t,0.6)'";
+      break;
+    case "paper":
+      f += ",fade=t=in:st=0:d=0.3:color=0xEDE6D6";
+      break;
+    case "glitch":
+      f += ",rgbashift=rh=-16:bh=16:gv=5:enable='lt(t,0.22)',noise=alls=42:allf=t:enable='lt(t,0.22)'";
+      break;
+    case "whip":
+      f += ",avgblur=sizeX=64:sizeY=1:enable='lt(t,0.2)',eq=brightness=0.06:enable='lt(t,0.2)'";
+      break;
+    default:
+      break; // hard_cut; zoom is applied inside the motion expression
+  }
+  if (out === "dip_to_black" && seconds > 0.8) f += `,fade=t=out:st=${f4(seconds - 0.3)}:d=0.3`;
+  return f;
+}
+const f4 = (n: number) => Number(n.toFixed(3));
+
 /** Build and run the FFmpeg command for one timeline clip. */
 export async function renderSegment(spec: SegmentSpec, outDir: string): Promise<{ path: string; cached: boolean }> {
   const out = path.join(outDir, `${segmentKey(spec)}.mp4`);
@@ -245,7 +284,13 @@ export async function renderSegment(spec: SegmentSpec, outDir: string): Promise<
 
   // --- motion ---------------------------------------------------------------
   const motionType = !isStill && clip.motion.type !== "punch_in" ? "none" : clip.motion.type;
-  const expr = motionExpr(motionType, clip.motion.intensity, frames);
+  let expr = motionExpr(motionType, clip.motion.intensity, frames);
+  // Zoom transition: the incoming shot starts pushed in and settles over ~0.35 s.
+  if (clip.transitionIn === "zoom") {
+    const settle = Math.max(2, Math.round(0.35 * fps));
+    const push = `(1+0.24*max(0,1-on/${settle}))`;
+    expr = expr ? { ...expr, z: `(${expr.z})*${push}` } : { z: push, x: "iw/2-(iw/zoom/2)", y: "ih/2-(ih/zoom/2)" };
+  }
   let chain: string;
   if (expr) {
     chain = `[${comp}]zoompan=z='${expr.z}':x='${expr.x}':y='${expr.y}':d=1:s=${W}x${H}:fps=${fps}`;
@@ -254,8 +299,7 @@ export async function renderSegment(spec: SegmentSpec, outDir: string): Promise<
     chain = `[${comp}]scale=${W}:${H}:flags=bicubic`;
   }
   chain += grain;
-  if (clip.transitionIn === "flash") chain += `,fade=t=in:st=0:d=0.16:color=white`;
-  if (clip.transitionIn === "fade") chain += `,fade=t=in:st=0:d=0.35`;
+  chain += transitionFilters(clip.transitionIn, frames / fps, clip.transitionOut);
   chain += `,fps=${fps},format=yuv420p,setsar=1[out]`;
   g.filters.push(chain);
 

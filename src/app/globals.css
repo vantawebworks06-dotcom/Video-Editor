@@ -47,3 +47,23 @@ body {
   border-radius: 8px;
   border: 2px solid var(--background);
 }
+
+/* Live-preview approximations of the editorial transitions (render: src/lib/render/segments.ts). */
+@keyframes tr-fade-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes tr-zoom { from { transform: scale(1.24); } to { transform: scale(1); } }
+@keyframes tr-whip { from { transform: translateX(16%); filter: blur(10px); } to { transform: none; filter: none; } }
+@keyframes tr-glitch {
+  0% { transform: translate(-3%, 1%); filter: hue-rotate(90deg) saturate(3); }
+  33% { transform: translate(3%, -1%); filter: hue-rotate(-60deg) contrast(1.6); }
+  66% { transform: translate(-1%, 0); filter: saturate(2); }
+  100% { transform: none; filter: none; }
+}
+.tr-in-zoom { animation: tr-zoom 0.35s ease-out; }
+.tr-in-whip { animation: tr-whip 0.22s ease-out; }
+.tr-in-glitch { animation: tr-glitch 0.24s steps(3); }
+.tr-ov-flash { background: #fff; animation: tr-fade-out 0.16s forwards; }
+.tr-ov-fade { background: #000; animation: tr-fade-out 0.35s forwards; }
+.tr-ov-dip_to_black { background: #000; animation: tr-fade-out 0.4s forwards; }
+.tr-ov-shutter { background: #000; animation: tr-fade-out 0.09s steps(1) forwards; }
+.tr-ov-film_burn { background: radial-gradient(circle at 30% 40%, #ffd08a, #ff7a1c 60%, #7a2200); mix-blend-mode: screen; animation: tr-fade-out 0.45s forwards; }
+.tr-ov-paper { background: #ede6d6; animation: tr-fade-out 0.3s forwards; }

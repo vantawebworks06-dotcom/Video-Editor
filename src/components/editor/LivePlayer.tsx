@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { fmtTime } from "@/components/ui";
 import type { Word } from "@/lib/domain/types";
+import { cardContent } from "./Inspector";
 import type { PlayheadStore } from "./playhead";
 import type { Clip, EditData } from "./types";
 
@@ -13,13 +14,14 @@ const DRIFT = 0.35; // seconds the speaker's own footage may drift from the narr
 const HAVE_CURRENT_DATA = 2;
 const HAVE_FUTURE_DATA = 3;
 
-type Source = { kind: "video"; src: string; synced: boolean } | { kind: "image"; src: string; fallback: string | null };
+type Source = { kind: "video"; src: string; synced: boolean } | { kind: "image"; src: string; fallback: string | null } | { kind: "card" };
 
 /** What the browser can show for a clip without the render pipeline. */
 function sourceFor(c: Clip, narrationUrl: string): Source | null {
   const a = c.asset;
   // The user's own narration video plays in sync with the narration itself.
   if (a.provider === "uploaded") return { kind: "video", src: narrationUrl, synced: true };
+  if (a.provider === "graphic") return { kind: "card" };
   if (a.type === "video") {
     if (MP4_PREVIEWS.has(a.provider) && a.previewUrl) return { kind: "video", src: a.previewUrl, synced: false };
     if (VIDEO_FILE.test(a.mediaUrl)) return { kind: "video", src: a.mediaUrl, synced: false };
@@ -127,14 +129,34 @@ function ClipVisual({ clip, source, t, active, visible, playing }: { clip: Clip;
   };
   const cls = `absolute inset-0 h-full w-full ${fit}`;
 
+  // Editorial transitions, approximated in CSS (the render uses FFmpeg; see render/segments.ts).
+  const tr = active && clip.transitionIn && clip.transitionIn !== "hard_cut" ? clip.transitionIn : null;
   return (
     <div className={`absolute inset-0 overflow-hidden ${visible ? "" : "invisible"}`}>
-      {source.kind === "video" ? (
+      <div className={`absolute inset-0 ${tr ? `tr-in-${tr}` : ""}`}>
+      {source.kind === "card" ? (
+        <CardView asset={clip.asset} style={style} />
+      ) : source.kind === "video" ? (
         <video ref={ref} src={synced ? source.src : `${source.src}#t=${clip.trimStart}`} poster={clip.asset.thumbnailUrl ?? undefined} muted playsInline loop={!synced} preload="auto" className={cls} style={style} />
       ) : broken && !source.fallback ? null : (
         // eslint-disable-next-line @next/next/no-img-element -- remote provider media, many hosts
         <img src={broken ? source.fallback! : source.src} alt="" decoding="async" className={cls} style={style} onError={() => setBroken(true)} />
       )}
+      </div>
+      {tr && <div className={`pointer-events-none absolute inset-0 tr-ov-${tr}`} />}
+    </div>
+  );
+}
+
+/** Designed text card (name / year / quote / headline), as the render draws it. */
+function CardView({ asset, style }: { asset: Clip["asset"]; style: React.CSSProperties }) {
+  const c = cardContent(asset);
+  const light = c.kind === "quote" || c.kind === "year" || c.kind === "chapter";
+  const big = c.kind === "year" || c.kind === "statistic" ? "text-[9cqw]" : c.text.length > 26 ? "text-[4cqw]" : "text-[6cqw]";
+  return (
+    <div className={`absolute inset-0 flex flex-col items-center justify-center px-[8%] text-center [container-type:size] ${light ? "bg-[#e9e2d3] text-[#1d1a14]" : "bg-[radial-gradient(circle_at_50%_40%,#2a2c31,#101113)] text-white"}`} style={style}>
+      <div className={`font-[Anton,Impact,sans-serif] leading-tight tracking-wide ${big}`}>{c.text}</div>
+      {c.sub && <div className="mt-[2%] text-[1.8cqw] uppercase tracking-widest opacity-75">{c.sub}</div>}
     </div>
   );
 }

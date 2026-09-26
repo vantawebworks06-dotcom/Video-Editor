@@ -89,9 +89,19 @@ export class ClaudeDirector implements Director {
     const plans = await this.claude.generateScenePlans(segments, this.planCtx(ctx));
     const missing = segments.filter((s) => !plans.has(s.sceneId));
     const fallbackPlans = missing.length ? await this.fallback.planScenes(missing, ctx) : [];
+    const storyboarded = await this.fallback.planScenes(segments.filter((s) => s.board), ctx);
     return segments.map((s) => {
       const p = plans.get(s.sceneId);
-      return p ? toScenePlan(s, p) : fallbackPlans.find((f) => f.sceneId === s.sceneId)!;
+      const claudePlan = p ? toScenePlan(s, p) : fallbackPlans.find((f) => f.sceneId === s.sceneId)!;
+      const board = storyboarded.find((b) => b.sceneId === s.sceneId);
+      if (!board || !p) return claudePlan;
+      // The storyboard decides beats, entities, fallbacks, transitions and sound; Claude's
+      // conceptual queries are added to each beat's entity-first ones, and its text/meme ideas kept.
+      const visualNeeds = board.visualNeeds.map((n, i) => {
+        const extra = claudePlan.visualNeeds[Math.min(i, claudePlan.visualNeeds.length - 1)]?.queries ?? [];
+        return n.type === "graphic" ? n : { ...n, queries: [...new Set([...n.queries, ...extra.slice(0, 2)])].slice(0, 6) };
+      });
+      return { ...board, visualNeeds, textOverlay: claudePlan.textOverlay.enabled ? claudePlan.textOverlay : board.textOverlay, analysis: claudePlan.analysis ?? board.analysis };
     });
   }
 

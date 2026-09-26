@@ -11,7 +11,9 @@ import {
   type Transcript,
   type VisualClip,
 } from "@/lib/domain/types";
+import { cardOf, isGraphic } from "./cards";
 import type { SceneSelection } from "./generate";
+import { buildMusicPlan } from "./music";
 import { NARRATION_ASSET_PREFIX } from "./originalFootage";
 
 export const TEXT_FONT = "Anton";
@@ -52,6 +54,8 @@ export interface BuildTimelineInput {
   voicePath: string | null;
   musicPath: string | null;
   ambiencePath?: string | null;
+  /** Local file for a generated bed key (enables story-driven music); omit to use `musicPath` only. */
+  resolveTrack?: (key: string) => string | null;
 }
 
 /**
@@ -83,13 +87,35 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
       motion: { type: s.motion, intensity: s.motionIntensity },
       treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite },
       annotations: s.annotations,
-      transitionIn: i > 0 && sorted[i - 1]!.sceneId !== s.sceneId ? (plan?.transition ?? "hard_cut") : "hard_cut",
+      transitionIn: s.transitionIn ?? (i > 0 && sorted[i - 1]!.sceneId !== s.sceneId ? (plan?.transition ?? "hard_cut") : "hard_cut"),
       role: s.role,
     });
   }
 
+  // Dip to black: the outgoing clip fades out as the next one fades in.
+  for (let i = 1; i < visuals.length; i++) if (visuals[i]!.transitionIn === "dip_to_black") visuals[i - 1]!.transitionOut = "dip_to_black";
+
+  // Designed cards: large text (and a smaller line under it) over the card's texture.
+  const cardTexts: TextClip[] = [];
+  for (const v of visuals) {
+    const sel = sorted.find((x) => x.clipId === v.id);
+    if (!sel || !isGraphic(sel.asset)) continue;
+    const card = cardOf(sel.asset);
+    const style: TextClip["style"] = card.kind === "year" || card.kind === "statistic" ? "statistic" : card.kind === "quote" ? "statement" : card.kind === "headline" ? "dramatic" : "chapter_title";
+    // Cards are the hero of their shot: set large, shrinking only for long lines.
+    const hero = card.kind === "year" || card.kind === "statistic" ? 1.9 : card.kind === "name" ? 1.55 : card.kind === "quote" ? 1.05 : 1.2;
+    // Long lines wrap (ASS smart wrapping) rather than shrinking to a caption.
+    const fit = card.text.length > 40 ? 0.7 : card.text.length > 26 ? 0.8 : card.text.length > 16 ? 0.9 : 1;
+    const scale = (height / 1080) * (width < height ? 0.8 : 1) * hero * fit;
+    cardTexts.push({ id: `${v.id}_card`, sceneId: v.sceneId, start: round(v.start + 0.12), duration: round(Math.max(0.4, v.duration - 0.2)), text: card.text, style, position: "center", animation: v.duration < 1.2 ? "none" : card.kind === "quote" ? "typewriter" : "pop", font: TEXT_FONT, fontSize: Math.round(TEXT_SIZE[style] * scale) });
+    if (card.sub && v.duration >= 1.6) {
+      cardTexts.push({ id: `${v.id}_cardsub`, sceneId: v.sceneId, start: round(v.start + 0.45), duration: round(Math.max(0.4, v.duration - 0.55)), text: card.sub.toUpperCase().slice(0, 64), style: "key_phrase", position: "bottom", animation: "fade", font: TEXT_FONT, fontSize: Math.round(46 * (height / 1080)) });
+    }
+  }
+  const onCard = (t: number) => visuals.some((v) => isGraphic(sorted.find((x) => x.clipId === v.id)?.asset ?? { provider: "pexels" }) && t >= v.start && t < v.start + v.duration);
+
   const texts: TextClip[] = input.plans
-    .filter((p) => p.textOverlay.enabled && p.textOverlay.text)
+    .filter((p) => p.textOverlay.enabled && p.textOverlay.text && !onCard(p.startTime + p.textOverlay.at))
     .map((p) => ({
       id: `${p.sceneId}_text`,
       sceneId: p.sceneId,
@@ -102,6 +128,8 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
       font: TEXT_FONT,
       fontSize: Math.round(TEXT_SIZE[p.textOverlay.style] * (height / 1080) * (width < height ? 0.8 : 1)),
     }));
+  texts.push(...cardTexts);
+  texts.sort((a, b) => a.start - b.start);
 
   const sfx: SfxClip[] = [];
   for (const p of input.plans) {
@@ -154,6 +182,9 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     audio: {
       voice: input.voicePath,
       music: input.musicPath,
+      musicCues: input.resolveTrack
+        ? buildMusicPlan({ plans: input.plans, duration, settings: input.settings, resolveTrack: input.resolveTrack, uploadedPath: input.settings.musicTrack === "uploaded" ? input.musicPath : null })
+        : undefined,
       ambience: input.ambiencePath ?? null,
       sfx: sfx.sort((a, b) => a.start - b.start),
       mix: input.settings.mix,

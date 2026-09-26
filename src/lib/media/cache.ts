@@ -25,7 +25,7 @@ export const SEARCH_CACHE_TTL_MS = Number(process.env.SEARCH_CACHE_TTL_HOURS ?? 
 const ARCHIVE_CACHE_TTL_MS = 7 * 24 * 3600_000;
 
 export function searchCacheTtlMs(provider: string): number {
-  return provider === "wikimedia" || provider === "internet_archive" ? Math.max(ARCHIVE_CACHE_TTL_MS, SEARCH_CACHE_TTL_MS) : SEARCH_CACHE_TTL_MS;
+  return provider === "wikimedia" || provider === "internet_archive" || provider === "wikipedia" ? Math.max(ARCHIVE_CACHE_TTL_MS, SEARCH_CACHE_TTL_MS) : SEARCH_CACHE_TTL_MS;
 }
 
 export function stableHash(value: unknown): string {

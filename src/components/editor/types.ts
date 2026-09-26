@@ -23,6 +23,8 @@ export interface Clip {
   blackAndWhite: boolean;
   annotations: Annotation[];
   trimStart: number;
+  /** How the clip enters (editorial transition), when set. */
+  transitionIn?: string;
 }
 
 export interface EditData {

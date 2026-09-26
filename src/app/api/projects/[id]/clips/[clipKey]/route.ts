@@ -55,7 +55,8 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteContext<"/api/proj
       if (body.trimStart !== undefined) fields.trim_start = body.trimStart;
       if (body.layout) fields.layout = body.layout;
       if (body.motion) fields.motion = body.motion;
-      if (body.blackAndWhite !== undefined) fields.treatment = { blackAndWhite: body.blackAndWhite, grain: body.blackAndWhite };
+      // Merge: the treatment also carries the clip's transition, which a B&W toggle must keep.
+      if (body.blackAndWhite !== undefined) fields.treatment = { ...(clip.treatment ?? {}), blackAndWhite: body.blackAndWhite, grain: body.blackAndWhite };
       if (body.annotations) fields.annotations = body.annotations;
       await save(clip.id, fields);
       break;
