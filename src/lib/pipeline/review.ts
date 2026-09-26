@@ -6,7 +6,7 @@
 import type { ScenePlan, VisualNeed } from "@/lib/domain/types";
 import { cardAsset, isGraphic } from "./cards";
 import type { SceneSelection } from "./generate";
-import { accepts, MIN_RELEVANCE, type RelevanceContext, type RelevanceResult, spacedReuseOk } from "./relevance";
+import { accepts, MIN_ENTITY_SCORE, MIN_RELEVANCE, type RelevanceContext, type RelevanceResult, spacedReuseOk } from "./relevance";
 
 export interface ReviewIssue {
   sceneId: string;
@@ -67,7 +67,17 @@ export function reviewEdit(
     const card = need?.card ?? { kind: "chapter" as const, text: (need?.description ?? "").toUpperCase().slice(0, 40), sub: null };
     const reason = `Replaced in review with a designed ${card.kind} card (${why}).`;
     used.set(s.asset.id, (used.get(s.asset.id) ?? 1) - 1);
-    Object.assign(s, { asset: cardAsset(card, reason), scores: null, overall: null, reason, needType: "graphic", trimStart: 0 });
+    const asset = cardAsset(card, reason);
+    // The same card as the shot before: hold that shot instead of cutting to an identical card.
+    const i = prim.indexOf(s);
+    const before = i > 0 ? prim[i - 1] : undefined;
+    if (before && isGraphic(before.asset) && before.asset.title === asset.title && before.sceneId === s.sceneId) {
+      before.duration = Math.round((s.start + s.duration - before.start) * 1000) / 1000;
+      selections.splice(selections.indexOf(s), 1);
+      prim.splice(i, 1);
+      return;
+    }
+    Object.assign(s, { asset, scores: null, overall: null, reason, needType: "graphic", trimStart: 0 });
   };
 
   const prim = selections.filter((s) => s.role === "primary").sort((a, b) => a.start - b.start);
@@ -104,7 +114,7 @@ export function reviewEdit(
     seenAt.set(s.asset.id, s.start);
     if (last === undefined) continue;
     const need = needFor(planOf.get(s.sceneId), s.clipId);
-    const entityMatched = Number(s.scores?.entityMatch ?? 0) >= 18 && (need?.entities?.length ?? 0) > 0;
+    const entityMatched = Number(s.scores?.entityMatch ?? 0) >= MIN_ENTITY_SCORE && (need?.entities?.length ?? 0) > 0;
     if (spacedReuseOk(need?.visualType, s.duration, s.start - last, entityMatched)) continue;
     if (!inScope(s)) continue;
     const reason = `"${s.asset.title.slice(0, 50)}" already appears earlier`;

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { activeJob, HttpError, parseBody, requireProject, requireUser, route } from "@/lib/api/server";
+import { parseSettings } from "@/lib/data/project";
 import { OutputFormat } from "@/lib/domain/types";
 
 const Body = z.discriminatedUnion("type", [
@@ -35,6 +36,9 @@ export const POST = route(async (req: NextRequest, ctx: RouteContext<"/api/proje
 
   if (await activeJob(auth.supabase, project.id)) throw new HttpError(409, "Another generation job is already running for this project.");
   if (body.type === "generate" && !project.narration_path && !project.is_demo) throw new HttpError(400, "Upload a narration first.");
+  if ((body.type === "generate" || body.type === "regenerate_scenes") && !project.is_demo && !parseSettings(project.settings).topic.trim()) {
+    throw new HttpError(400, "Tell DocuCut what this video is about first (Project tab → What is this video about?). It's the global context for every search and edit decision.");
+  }
   if (body.type === "analyze_reference" && !project.reference_video_path) throw new HttpError(400, "Upload a reference video first.");
   const payload =
     body.type === "regenerate_scenes"

@@ -11,7 +11,7 @@ import { existsSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { parseSettings } from "@/lib/data/project";
-import type { ScenePlan, Transcript } from "@/lib/domain/types";
+import type { ProjectSettings, ScenePlan, StyleProfile, Transcript } from "@/lib/domain/types";
 import type { SceneSelection } from "@/lib/pipeline/generate";
 import { buildTimeline } from "@/lib/pipeline/timelineBuilder";
 import { runFfmpeg } from "@/lib/render/ffmpeg";
@@ -27,8 +27,8 @@ async function main() {
   const from = Number(fromS);
   const to = Number(toS);
   const project = JSON.parse(await readFile(path.join(OUT, `project-${id}.json`), "utf8"));
-  const run = JSON.parse(await readFile(path.join(OUT, `${label}.json`), "utf8")) as { plans: ScenePlan[]; selections: SceneSelection[] };
-  const settings = parseSettings(project.settings);
+  const run = JSON.parse(await readFile(path.join(OUT, `${label}.json`), "utf8")) as { plans: ScenePlan[]; selections: SceneSelection[]; settings?: ProjectSettings; style?: StyleProfile };
+  const settings = run.settings ?? parseSettings(project.settings);
   if (rest.includes("--auto-music")) settings.musicTrack = "auto";
 
   // Narration audio (downloaded once).
@@ -67,6 +67,7 @@ async function main() {
     voicePath: clip,
     musicPath: null,
     resolveTrack: (key) => (existsSync(library.music(key)) ? library.music(key) : null),
+    style: run.style,
   });
   await writeFile(path.join(OUT, `${label}-${from}-${to}.timeline.json`), JSON.stringify(timeline, null, 1));
   console.log(`visuals ${timeline.visuals.length} · texts ${timeline.texts.length} · sfx ${timeline.audio.sfx.map((c) => `${c.kind}@${c.start}`).join(" ")}`);

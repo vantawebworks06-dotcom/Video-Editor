@@ -61,6 +61,7 @@ export function SetupPanel({ status, onChanged, onAnalyzeReference }: { status: 
   return (
     <div className="space-y-4 p-3 text-sm">
       {msg && <p className="rounded border border-line bg-panel-2 p-2 text-xs">{msg}</p>}
+      <TopicFields key={`${s.topic}|${s.context}`} topic={s.topic} context={s.context} disabled={busy !== null} onSave={(v) => void save(v)} />
       {p.isDemo ? (
         <p className="rounded border border-accent/30 bg-accent/10 p-2 text-xs text-accent">Demo project: narration is the worker&apos;s generated TTS voice reading a fictional script.</p>
       ) : (
@@ -84,6 +85,7 @@ export function SetupPanel({ status, onChanged, onAnalyzeReference }: { status: 
       )}
 
       <div className="space-y-3 border-t border-line pt-3">
+        <EditingControls s={s} disabled={busy !== null} onSave={(v) => void save(v)} hasReference={p.hasReference} />
         <div>
           <Label>Style preset</Label>
           <Select value={s.stylePreset} disabled={busy !== null} onChange={(e) => void save({ stylePreset: e.target.value })}>
@@ -173,6 +175,78 @@ export function SetupPanel({ status, onChanged, onAnalyzeReference }: { status: 
             Render unknown-rights assets I have explicitly approved <span className="text-muted">— never auto-selected</span>
           </span>
         </label>
+      </div>
+    </div>
+  );
+}
+
+/** "What is this video about?" — required global context for the whole edit. Saved on blur. */
+export function TopicFields({ topic, context, disabled, onSave }: { topic: string; context: string; disabled: boolean; onSave: (v: Partial<ProjectSettings>) => void }) {
+  const [t, setT] = useState(topic);
+  const [c, setC] = useState(context);
+  return (
+    <div className="space-y-2 rounded border border-accent/40 bg-accent/5 p-2.5">
+      <Label hint="required">What is this video about?</Label>
+      <textarea
+        value={t}
+        disabled={disabled}
+        rows={4}
+        maxLength={2000}
+        placeholder="e.g. An in-depth documentary about the Gully Gaza rivalry in Jamaican dancehall, how it developed, the artists involved, the major events that escalated it, and how it affected Jamaican culture."
+        className="w-full rounded border border-line bg-background p-2 text-xs"
+        onChange={(e) => setT(e.target.value)}
+        onBlur={() => t !== topic && onSave({ topic: t.trim() })}
+      />
+      {!t.trim() && <p className="text-[11px] text-danger">Required: every search, ranking and edit decision uses this as global context.</p>}
+      <Label hint="optional">Additional context</Label>
+      <textarea
+        value={c}
+        disabled={disabled}
+        rows={2}
+        maxLength={4000}
+        placeholder="e.g. For a YouTube documentary audience. Focus on Jamaica, dancehall, the artists involved, the timeline and the cultural impact."
+        className="w-full rounded border border-line bg-background p-2 text-xs"
+        onChange={(e) => setC(e.target.value)}
+        onBlur={() => c !== context && onSave({ context: c.trim() })}
+      />
+    </div>
+  );
+}
+
+/** Editing controls with intelligent defaults ("auto" follows the reference video / style). */
+function EditingControls({ s, disabled, onSave, hasReference }: { s: ProjectSettings; disabled: boolean; onSave: (v: Partial<ProjectSettings>) => void; hasReference: boolean }) {
+  const opt = (values: string[], labels: Record<string, string> = {}) =>
+    values.map((v) => (
+      <option key={v} value={v}>
+        {labels[v] ?? v[0]!.toUpperCase() + v.slice(1)}
+      </option>
+    ));
+  const auto = hasReference ? "Auto (from reference)" : "Auto";
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      <div>
+        <Label>Pacing</Label>
+        <Select value={s.pacing} disabled={disabled} onChange={(e) => onSave({ pacing: e.target.value as ProjectSettings["pacing"] })}>
+          {opt(["auto", "slow", "normal", "fast", "dynamic"], { auto })}
+        </Select>
+      </div>
+      <div>
+        <Label>Visual intensity</Label>
+        <Select value={s.visualIntensity} disabled={disabled} onChange={(e) => onSave({ visualIntensity: e.target.value as ProjectSettings["visualIntensity"] })}>
+          {opt(["auto", "low", "medium", "high"], { auto })}
+        </Select>
+      </div>
+      <div>
+        <Label>Music</Label>
+        <Select value={s.musicIntensity} disabled={disabled} onChange={(e) => onSave({ musicIntensity: e.target.value as ProjectSettings["musicIntensity"] })}>
+          {opt(["auto", "minimal", "cinematic", "dynamic", "intense"], { auto })}
+        </Select>
+      </div>
+      <div>
+        <Label>Sound effects</Label>
+        <Select value={s.sfxIntensity} disabled={disabled} onChange={(e) => onSave({ sfxIntensity: e.target.value as ProjectSettings["sfxIntensity"] })}>
+          {opt(["auto", "off", "low", "medium", "high"], { auto })}
+        </Select>
       </div>
     </div>
   );

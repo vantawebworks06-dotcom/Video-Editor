@@ -6,7 +6,7 @@ import { buildAudioGraph } from "./audio";
 import { probe, runFfmpeg } from "./ffmpeg";
 import { library, libraryReady } from "./library";
 import { type PrepareContext, type PreparedAsset, prepareAsset } from "./prepare";
-import { renderSegment } from "./segments";
+import { BLEND_TRANSITIONS, blendSegment, renderSegment } from "./segments";
 
 export interface RenderOptions {
   workDir: string;
@@ -121,6 +121,20 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
     finished++;
     await stage("RENDERING", finished / timeline.visuals.length, `Segment ${finished}/${timeline.visuals.length}${cached ? ` (${cached} cached)` : ""}`);
   });
+
+  // 3b. Blend transitions (dissolve, luma fade, wipe, motion blur, dip to white) need both shots.
+  const blends = timeline.visuals.map((v, i) => ({ v, i })).filter(({ v, i }) => i > 0 && BLEND_TRANSITIONS[v.transitionIn]);
+  if (blends.length) {
+    await stage("RENDERING", 1, `Blending ${blends.length} transitions`);
+    const original = [...segments];
+    await pool(blends, opts.concurrency ?? 2, async ({ v, i }) => {
+      try {
+        segments[i] = await blendSegment(original[i - 1]!, original[i]!, v.transitionIn, Math.max(1, Math.round(v.duration * timeline.fps)) / timeline.fps, timeline.fps, Boolean(opts.draft), segDir);
+      } catch (err) {
+        warnings.push(`${v.id}: ${v.transitionIn} transition failed (${(err as Error).message.slice(0, 120)}); used a cut.`);
+      }
+    });
+  }
 
   // 4. FINALIZING — concat + libass text/captions + audio mix.
   await stage("FINALIZING", 0, "Mixing audio and compositing text");

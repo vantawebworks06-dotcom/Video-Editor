@@ -6,6 +6,7 @@ import {
   type ProjectSettings,
   type ScenePlan,
   type SfxClip,
+  type StyleProfile,
   type TextClip,
   Timeline,
   type Transcript,
@@ -56,6 +57,8 @@ export interface BuildTimelineInput {
   ambiencePath?: string | null;
   /** Local file for a generated bed key (enables story-driven music); omit to use `musicPath` only. */
   resolveTrack?: (key: string) => string | null;
+  /** Style profile (reference or preset): music sections/dynamics follow it. */
+  style?: StyleProfile;
 }
 
 /**
@@ -92,8 +95,9 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     });
   }
 
-  // Dip to black: the outgoing clip fades out as the next one fades in.
+  // Dip to black: the outgoing clip fades out as the next one fades in; the film ends on a fade out.
   for (let i = 1; i < visuals.length; i++) if (visuals[i]!.transitionIn === "dip_to_black") visuals[i - 1]!.transitionOut = "dip_to_black";
+  if (visuals.length && visuals.at(-1)!.duration > 1.2) visuals.at(-1)!.transitionOut = "dip_to_black";
 
   // Designed cards: large text (and a smaller line under it) over the card's texture.
   const cardTexts: TextClip[] = [];
@@ -183,7 +187,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
       voice: input.voicePath,
       music: input.musicPath,
       musicCues: input.resolveTrack
-        ? buildMusicPlan({ plans: input.plans, duration, settings: input.settings, resolveTrack: input.resolveTrack, uploadedPath: input.settings.musicTrack === "uploaded" ? input.musicPath : null })
+        ? buildMusicPlan({ plans: input.plans, duration, settings: input.settings, resolveTrack: input.resolveTrack, style: input.style, uploadedPath: input.settings.musicTrack === "uploaded" ? input.musicPath : null })
         : undefined,
       ambience: input.ambiencePath ?? null,
       sfx: sfx.sort((a, b) => a.start - b.start),

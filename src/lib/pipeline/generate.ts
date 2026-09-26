@@ -23,6 +23,11 @@ import { buildEntityIndex, foreignRegex } from "./entities";
 import { HeuristicDirector } from "./heuristicDirector";
 import type { RelevanceContext, RelevanceResult } from "./relevance";
 import { reviewEdit, type ReviewIssue } from "./review";
+import { bibleSummary, buildBible } from "./bible";
+import { scoreEdit } from "./quality";
+import { type RefineAction, type RefinementHistory, refinePacing, refineRelevance, refineSound } from "./refine";
+import { type EditingTargets, editingTargets } from "./style";
+import { allocateTransitions, type TransitionReport } from "./transitions";
 import { buildStoryboards, type SceneBoard } from "./storyboard";
 import { sentencesFromWords } from "./transcript";
 
@@ -82,6 +87,13 @@ export interface GenerateResult {
   searchErrors: SearchError[];
   /** Pass-2 editorial review: what was flagged and what was done about it. */
   review?: ReviewIssue[];
+  /** The project's editorial bible (topic → subjects, geography, vocabulary…). */
+  bible?: ReturnType<typeof bibleSummary>;
+  /** Editing targets actually used (reference-measured or preset) and the transition allocation. */
+  targets?: { source: string; shotSeconds: number; shotVariation: number; transitionMix: EditingTargets["transitionMix"]; sfxPerMinute: number; silencesPerMinute: number; stillShare: number };
+  transitions?: TransitionReport;
+  /** Editorial score per refinement pass (the last one is final). */
+  scoreHistory?: RefinementHistory[];
 }
 
 const ARCHIVE_PROVIDERS: ProviderId[] = ["wikimedia", "internet_archive"];
@@ -112,11 +124,17 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
   //      (reuse untouched scenes when regenerating a subset). Nothing is searched before this.
   await deps.onProgress?.("Understanding scenes…", 0.05);
   const fullText = input.transcript.words.map((w) => w.word).join(" ");
-  const entityIndex = await buildEntityIndex(fullText, input.projectTitle, { cache: deps.searchCache, log, signal: deps.signal });
+  // The VIDEO TOPIC is global context: it sharpens entity linking and becomes the editorial bible.
+  const topicText = [input.settings.topic, input.settings.context].filter(Boolean).join(". ");
+  const entityIndex = await buildEntityIndex(fullText, input.projectTitle, { cache: deps.searchCache, log, signal: deps.signal, topic: topicText || input.projectTitle });
+  const bible = buildBible(input.settings.topic || input.projectTitle, input.settings.context, entityIndex, fullText);
+  // The reference video (or preset) + the user's controls → concrete editing targets.
+  const editing = editingTargets(input.style, input.settings);
+  log(`bible: subjects=${bible.primarySubjects.join(" | ")} anchors=${bible.anchors.join(",")} · targets(${editing.source}): shot ${editing.shotSeconds.toFixed(1)}s ±${editing.shotVariation.toFixed(2)}, dips ${(editing.transitionMix.dipToBlack * 100).toFixed(0)}%, sfx ${editing.sfxPerMinute.toFixed(1)}/min`);
   let plans: ScenePlan[];
   let boards: Map<string, SceneBoard>;
   if (input.onlySceneIds && input.existing) {
-    boards = buildStoryboards(input.existing.plans, input.transcript.words, entityIndex, input.style);
+    boards = buildStoryboards(input.existing.plans, input.transcript.words, entityIndex, input.style, { bible, targets: editing });
     const targets = input.existing.plans.filter((p) => input.onlySceneIds!.has(p.sceneId));
     await deps.onProgress?.("Understanding scenes…", 0.1);
     const segments: SceneSegment[] = targets.map((p) => ({
@@ -136,13 +154,13 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
     if (!sentences.length) throw new Error("The transcript has no words to edit.");
     const segments = await director.segmentScenes(input.transcript, sentences, ctx);
     log(`segmented into ${segments.length} scenes`);
-    boards = buildStoryboards(segments, input.transcript.words, entityIndex, input.style);
+    boards = buildStoryboards(segments, input.transcript.words, entityIndex, input.style, { bible, targets: editing });
     for (const seg of segments) seg.board = boards.get(seg.sceneId);
     await deps.onProgress?.("Understanding scenes…", 0.15);
     plans = await director.planScenes(segments, ctx);
   }
   for (const p of plans) if (!p.storyboard && boards.get(p.sceneId)) p.storyboard = boards.get(p.sceneId)!.storyboard;
-  const rel: RelevanceContext = { country: entityIndex.country, foreign: foreignRegex(entityIndex.country), used: new Set(), recentProviders: [], recentKinds: [], recentCards: new Map(), usedAt: new Map(), storyNames: entityIndex.entities.filter((e) => e.kind === "person" || e.kind === "organization").flatMap((e) => [e.name, ...e.aliases]), storyYear: medianYear(fullText) };
+  const rel: RelevanceContext = { country: entityIndex.country, foreign: foreignRegex(entityIndex.country), used: new Set(), recentProviders: [], recentKinds: [], recentCards: new Map(), usedAt: new Map(), storyNames: entityIndex.entities.filter((e) => e.kind === "person" || e.kind === "organization").flatMap((e) => [e.name, ...e.aliases]), storyYear: medianYear(fullText), bible, preferVideo: editing.stillShare < 0.5 };
   const pool = new Map<string, RelevanceResult[]>();
 
   // 3-5. Search, rank and select media per visual need.
@@ -190,9 +208,11 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
         const pick = await selectEditorial(plan, need, clipId, cursor, ctx, deps, rel, searchErrors, input.settings, prefetched.get(clipId), videoTrimStart);
         chosen = pick.selection;
         pool.set(clipId, pick.ranked);
-        rel.usedAt!.set(chosen.asset.id, cursor);
-        rel.recentProviders.push(chosen.asset.provider);
-        rel.recentKinds.push(isGraphic(chosen.asset) ? "graphic" : chosen.asset.type === "video" ? "video" : chosen.asset.archival ? "archival" : "photo");
+        if (chosen) {
+          rel.usedAt!.set(chosen.asset.id, cursor);
+          rel.recentProviders.push(chosen.asset.provider);
+          rel.recentKinds.push(isGraphic(chosen.asset) ? "graphic" : chosen.asset.type === "video" ? "video" : chosen.asset.archival ? "archival" : "photo");
+        }
       } else {
         chosen = await selectForNeed(plan, need, clipId, cursor, ctx, deps, used, recent, searchErrors, input.settings, prefetched.get(clipId));
       }
@@ -243,6 +263,36 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
   const review = reviewEdit(plans, selections, pool, { onlySceneIds: input.onlySceneIds, rel });
   for (const r of review) log(`review: ${r.clipId ?? r.sceneId} ${r.problem} → ${r.action}`);
 
+  // Pass 3: transitions to the reference mix, then score the edit and refine weak dimensions
+  // until it holds up (max two refinement passes).
+  let transitions = allocateTransitions(selections, plans, editing, input.onlySceneIds);
+  const scoreHistory: RefinementHistory[] = [{ pass: 0, score: scoreEdit(selections, plans, editing), actions: [] }];
+  let best = scoreHistory[0]!.score;
+  for (let pass = 1; pass <= 3; pass++) {
+    const sc = best;
+    if (sc.total >= 78 && sc.topicRelevance >= 65 && sc.narrationMatch >= 60 && sc.referenceStyle >= 70) break;
+    // Snapshot, so a pass that makes the edit worse is undone (refinement must improve it).
+    const snapshot = { sel: selections.map((s) => ({ ...s })), sfx: plans.map((p) => [...p.sfx]) };
+    const actions: RefineAction[] = [];
+    if (sc.topicRelevance < 65 || sc.narrationMatch < 60) actions.push(refineRelevance(selections, plans, pool, 54 + pass * 3));
+    if (sc.pacing < 70 || sc.referenceStyle < 70) actions.push(refinePacing(selections, plans, pool, editing));
+    if (sc.soundDesign < 70) actions.push(refineSound(plans, selections, editing));
+    transitions = allocateTransitions(selections, plans, editing, input.onlySceneIds);
+    const next = scoreEdit(selections, plans, editing);
+    const kept = next.total >= sc.total;
+    if (!kept) {
+      selections.splice(0, selections.length, ...snapshot.sel);
+      plans.forEach((p, i) => (p.sfx = snapshot.sfx[i]!));
+      transitions = allocateTransitions(selections, plans, editing, input.onlySceneIds);
+    } else best = next;
+    scoreHistory.push({ pass, score: next, actions: kept ? actions : actions.map((a) => ({ ...a, action: `${a.action} — reverted (score fell ${sc.total} → ${next.total})` })) });
+    log(`refine pass ${pass}: ${actions.map((a) => `${a.dimension}: ${a.action}`).join("; ")} → score ${sc.total} → ${next.total}${kept ? "" : " (reverted)"}`);
+    if (!kept || !actions.some((a) => a.count > 0)) break; // deterministic: a rejected pass won't improve on retry
+  }
+  const finalScore = best;
+  scoreHistory.push({ pass: scoreHistory.length, score: finalScore, actions: [{ dimension: "final", action: "kept the best-scoring version", count: 0 }] });
+  log(`editorial score ${finalScore.total}: topic ${finalScore.topicRelevance}, narration ${finalScore.narrationMatch}, variety ${finalScore.visualVariety}, pacing ${finalScore.pacing}, style ${finalScore.referenceStyle}, sound ${finalScore.soundDesign}, music ${finalScore.musicDynamics}, transitions ${finalScore.transitionVariety}`);
+
   // 6. Per-clip layout/motion/annotation decisions.
   await deps.onProgress?.("Adding effects…", 0.85);
   for (const s of selections) if (isGraphic(s.asset)) Object.assign(s, { layout: "fullscreen", motion: "slow_zoom_in", motionIntensity: 0.05 });
@@ -275,7 +325,17 @@ export async function generateEdit(input: GenerateInput, deps: GenerateDeps): Pr
   }
 
   await deps.onProgress?.("Building timeline…", 0.95);
-  return { plans, selections, warnings, searchErrors, review };
+  return {
+    plans,
+    selections,
+    warnings,
+    searchErrors,
+    review,
+    bible: bibleSummary(bible),
+    targets: { source: editing.source, shotSeconds: editing.shotSeconds, shotVariation: editing.shotVariation, transitionMix: editing.transitionMix, sfxPerMinute: editing.sfxPerMinute, silencesPerMinute: editing.silencesPerMinute, stillShare: editing.stillShare },
+    transitions,
+    scoreHistory,
+  };
 }
 
 /** Typical year a story is set in: the median of the years its narration mentions. */

@@ -20,6 +20,9 @@ export function AutoEditPanel() {
   const [memes, setMemes] = useState("LOW");
   const [footage, setFootage] = useState<"replace" | "mix">("replace");
   const [captions, setCaptions] = useState("OFF");
+  const [topic, setTopic] = useState("");
+  const [context, setContext] = useState("");
+  const [reference, setReference] = useState<File | null>(null);
   const [step, setStep] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -36,6 +39,7 @@ export function AutoEditPanel() {
 
   const start = async () => {
     if (!file) return;
+    if (!topic.trim()) return setError("Tell DocuCut what the video is about — every search and edit decision uses it.");
     setError(null);
     try {
       setStep("Creating project…");
@@ -44,6 +48,11 @@ export function AutoEditPanel() {
         method: "POST",
         json: { name, stylePreset: style, memeFrequency: memes, captions, originalFootage: footage },
       });
+      await api(`/api/projects/${id}`, { method: "PATCH", json: { settings: { topic: topic.trim(), context: context.trim() } } });
+      if (reference) {
+        setStep("Uploading reference video…");
+        await uploadProjectFile(id, "reference", reference, { onProgress: (f) => setStep(`Uploading reference… ${Math.round(f * 100)}%`) });
+      }
       const mb = file.size / 1024 / 1024;
       setStep(`Uploading… 0% of ${mb.toFixed(1)} MB`);
       await uploadProjectFile(id, "narration", file, {
@@ -124,9 +133,41 @@ export function AutoEditPanel() {
           </div>
         </div>
       </div>
+      <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr]">
+        <div>
+          <Label hint="required">What is this video about?</Label>
+          <textarea
+            value={topic}
+            rows={3}
+            maxLength={2000}
+            disabled={step !== null}
+            onChange={(e) => setTopic(e.target.value)}
+            placeholder="e.g. An in-depth documentary about the Gully Gaza rivalry in Jamaican dancehall, how it developed, the artists involved, the major events that escalated it, and how it affected Jamaican culture."
+            className="w-full rounded-md border border-line bg-panel p-2 text-sm"
+          />
+        </div>
+        <div className="space-y-2">
+          <div>
+            <Label hint="optional">Additional context</Label>
+            <textarea
+              value={context}
+              rows={2}
+              maxLength={4000}
+              disabled={step !== null}
+              onChange={(e) => setContext(e.target.value)}
+              placeholder="e.g. For a YouTube documentary audience. Focus on Jamaica, dancehall, the artists, the timeline and the cultural impact."
+              className="w-full rounded-md border border-line bg-panel p-2 text-sm"
+            />
+          </div>
+          <div>
+            <Label hint="optional — its editing style is measured and followed">Reference video</Label>
+            <input type="file" accept={ACCEPT} disabled={step !== null} className="w-full text-xs text-muted file:mr-2 file:rounded file:border-0 file:bg-panel-2 file:px-2 file:py-1 file:text-foreground" onChange={(e) => setReference(e.target.files?.[0] ?? null)} />
+          </div>
+        </div>
+      </div>
       {error && <p className="mt-3 rounded-md border border-danger/30 bg-danger/10 p-2 text-sm text-danger">{error}</p>}
       <div className="mt-4 flex items-center gap-3">
-        <Button variant="primary" className="h-11 px-6 text-base" disabled={!file || step !== null} onClick={() => void start()}>
+        <Button variant="primary" className="h-11 px-6 text-base" disabled={!file || !topic.trim() || step !== null} onClick={() => void start()}>
           {step ?? "AUTO-EDIT MY VIDEO"}
         </Button>
         <span className="text-xs text-muted">Your narration is never cut or re-timed. You can review every scene before the final render.</span>

@@ -67,3 +67,18 @@ body {
 .tr-ov-shutter { background: #000; animation: tr-fade-out 0.09s steps(1) forwards; }
 .tr-ov-film_burn { background: radial-gradient(circle at 30% 40%, #ffd08a, #ff7a1c 60%, #7a2200); mix-blend-mode: screen; animation: tr-fade-out 0.45s forwards; }
 .tr-ov-paper { background: #ede6d6; animation: tr-fade-out 0.3s forwards; }
+@keyframes tr-fade-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tr-wipe { from { clip-path: inset(0 0 0 100%); } to { clip-path: inset(0 0 0 0); } }
+@keyframes tr-shake {
+  0%, 100% { transform: none; }
+  20% { transform: translate(-2%, 1%); }
+  40% { transform: translate(2%, -1.5%); }
+  60% { transform: translate(-1.5%, -1%); }
+  80% { transform: translate(1%, 1%); }
+}
+.tr-in-dissolve, .tr-in-luma_fade { animation: tr-fade-in 0.45s ease-out; }
+.tr-in-wipe { animation: tr-wipe 0.4s ease-out; }
+.tr-in-motion_blur { animation: tr-whip 0.3s ease-out; }
+.tr-in-rgb_split { animation: tr-glitch 0.3s steps(3); }
+.tr-in-shake { animation: tr-shake 0.4s ease-out; }
+.tr-ov-dip_to_white { background: #fff; animation: tr-fade-out 0.35s forwards; }

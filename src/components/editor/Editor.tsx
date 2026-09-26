@@ -212,7 +212,13 @@ export function Editor({ projectId }: { projectId: string }) {
             AI usage: {status.usage.calls} calls ({status.usage.cached_calls} cached) · {Number(status.usage.input_tokens).toLocaleString()} in / {Number(status.usage.output_tokens).toLocaleString()} out · est. ${Number(status.usage.cost_usd).toFixed(3)}
           </div>
         </div>
-        <Button variant="primary" disabled={busy || ACTIVE.includes(pj?.status ?? "") || !p.hasNarration} onClick={() => (!hasEdit || confirm("Regenerate the whole edit? Your manual changes will be replaced.")) && void enqueue({ type: "generate" })}>
+        {pj?.status === "COMPLETE" && pj.result?.score && <EditorialScoreChip score={pj.result.score} refinement={pj.result.refinement ?? []} source={pj.result.targets?.source ?? null} />}
+        <Button
+          variant="primary"
+          disabled={busy || ACTIVE.includes(pj?.status ?? "") || !p.hasNarration || (!p.isDemo && !p.settings.topic.trim())}
+          title={!p.isDemo && !p.settings.topic.trim() ? "Add “What is this video about?” in the Project tab first" : undefined}
+          onClick={() => (!hasEdit || confirm("Regenerate the whole edit? Your manual changes will be replaced.")) && void enqueue({ type: "generate" })}
+        >
           {hasEdit ? "Regenerate All" : "Generate"}
         </Button>
         <Select className="w-52" value={format} onChange={(e) => setFormat(e.target.value as typeof format)}>
@@ -487,6 +493,48 @@ function AutoEditProgress({ stage, progress, queued, busy, onCancel }: { stage: 
       <Button variant="danger" disabled={busy} onClick={onCancel}>
         Cancel
       </Button>
+    </div>
+  );
+}
+
+/** The editorial score of the last generation, with its breakdown and refinement passes. */
+function EditorialScoreChip({ score, refinement, source }: { score: NonNullable<NonNullable<StatusData["pipelineJob"]>["result"]>["score"] & object; refinement: { pass: number; total: number; actions: string[] }[]; source: string | null }) {
+  const tone = score.total >= 78 ? "text-ok" : score.total >= 65 ? "text-accent" : "text-danger";
+  const rows: [string, number][] = [
+    ["Topic relevance", score.topicRelevance],
+    ["Narration match", score.narrationMatch],
+    ["Visual variety", score.visualVariety],
+    ["Pacing", score.pacing],
+    [source === "reference" ? "Reference style match" : "Style match", score.referenceStyle],
+    ["Sound design", score.soundDesign],
+    ["Music dynamics", score.musicDynamics],
+    ["Transition variety", score.transitionVariety],
+  ];
+  return (
+    <div className="group relative">
+      <span className={cx("cursor-help rounded border border-line px-2 py-1 text-xs", tone)}>Editorial score {score.total}</span>
+      <div className="invisible absolute right-0 top-8 z-30 w-80 rounded-md border border-line bg-panel p-3 text-xs shadow-xl group-hover:visible">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex items-center gap-2 py-0.5">
+            <span className="w-40 text-muted">{k}</span>
+            <div className="h-1.5 flex-1 overflow-hidden rounded bg-panel-2">
+              <div className={cx("h-full", v >= 75 ? "bg-ok" : v >= 60 ? "bg-accent" : "bg-danger")} style={{ width: `${v}%` }} />
+            </div>
+            <span className="w-7 text-right tabular-nums">{v}</span>
+          </div>
+        ))}
+        {score.notes.length > 0 && <ul className="mt-2 list-disc pl-4 text-muted">{score.notes.map((n) => <li key={n}>{n}</li>)}</ul>}
+        {refinement.length > 1 && (
+          <div className="mt-2 border-t border-line pt-2 text-muted">
+            {refinement.map((r) => (
+              <div key={r.pass}>
+                Pass {r.pass}: {r.total}
+                {r.actions.length ? ` — ${r.actions.join("; ")}` : ""}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

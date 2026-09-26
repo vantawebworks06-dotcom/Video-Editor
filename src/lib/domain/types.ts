@@ -104,6 +104,10 @@ export const MotionType = z.enum([
   "diagonal",
   "subtle_rotation",
   "punch_in",
+  /** Documents/articles: open pushed in on the headline, then move down the page. */
+  "document_scan",
+  /** Hold, then punch into a detail on the upper third (faces, headlines). */
+  "detail_punch",
 ]);
 export type MotionType = z.infer<typeof MotionType>;
 
@@ -112,7 +116,27 @@ export type MotionType = z.infer<typeof MotionType>;
  * dip_to_black; energetic → zoom / whip; archival → film_burn / shutter; documents → paper;
  * climaxes → flash / glitch.
  */
-export const Transition = z.enum(["hard_cut", "flash", "fade", "dip_to_black", "zoom", "whip", "glitch", "film_burn", "shutter", "paper"]);
+export const Transition = z.enum([
+  "hard_cut",
+  /** A hard cut chosen because the two shots show the same subject (rendered as a cut). */
+  "match_cut",
+  "flash",
+  "fade",
+  "dip_to_black",
+  "dip_to_white",
+  "dissolve",
+  "luma_fade",
+  "wipe",
+  "motion_blur",
+  "zoom",
+  "whip",
+  "glitch",
+  "rgb_split",
+  "shake",
+  "film_burn",
+  "shutter",
+  "paper",
+]);
 export type Transition = z.infer<typeof Transition>;
 
 export const Layout = z.enum(["fullscreen", "paper_card", "polaroid", "article", "picture_in_picture"]);
@@ -355,6 +379,10 @@ export const Storyboard = z.object({
   transitionReason: z.string(),
   memeReason: z.string(),
   beats: z.array(StoryBeat),
+  /** Attention map role: hook, setup, context, buildup, escalation, reveal, climax, aftermath, conclusion. */
+  attention: z.string().optional(),
+  /** Intentional silences (music and SFX drop out) before a reveal line, absolute seconds. */
+  silences: z.array(z.object({ at: z.number(), duration: z.number() })).optional(),
 });
 export type Storyboard = z.infer<typeof Storyboard>;
 
@@ -460,6 +488,8 @@ export const MusicCue = z.object({
   trim: z.number(),
   /** Gain points relative to the cue start, following the intensity curve. */
   gains: z.array(z.object({ t: z.number(), g: z.number() })),
+  /** Intentional silences (relative to the cue start): the music stops, then returns on the hit. */
+  mutes: z.array(z.object({ from: z.number(), to: z.number() })).optional(),
 });
 export type MusicCue = z.infer<typeof MusicCue>;
 
@@ -520,6 +550,14 @@ export const ProjectSettings = z.object({
   musicTrack: z.string(),
   /** Narration video: "replace" hides its picture; "mix" cuts back to the speaker (interview + B-roll). */
   originalFootage: z.enum(["replace", "mix"]),
+  /** "What is this video about?" — global context for every stage of the edit (required to generate). */
+  topic: z.string().max(2000),
+  /** Optional audience/focus notes, also global context. */
+  context: z.string().max(4000),
+  visualIntensity: z.enum(["auto", "low", "medium", "high"]),
+  pacing: z.enum(["auto", "slow", "normal", "fast", "dynamic"]),
+  musicIntensity: z.enum(["auto", "minimal", "cinematic", "dynamic", "intense"]),
+  sfxIntensity: z.enum(["auto", "off", "low", "medium", "high"]),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
@@ -544,7 +582,36 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   gifRating: "pg",
   musicTrack: "auto",
   originalFootage: "replace",
+  topic: "",
+  context: "",
+  visualIntensity: "auto",
+  pacing: "auto",
+  musicIntensity: "auto",
+  sfxIntensity: "auto",
 };
+
+/** Measured editing characteristics of a reference video (all values measured, none invented). */
+export const ReferenceStyle = z.object({
+  source: z.string(),
+  averageShotDuration: z.number(),
+  medianShotDuration: z.number(),
+  shotDurationVariation: z.number(),
+  cutsPerMinute: z.number(),
+  transitionMix: z.object({ hardCut: z.number(), dissolve: z.number(), dipToBlack: z.number(), dipToWhite: z.number() }),
+  shotKinds: z.object({ still: z.number(), animatedStill: z.number(), live: z.number(), graphic: z.number() }),
+  photoAnimationShare: z.number(),
+  blackAndWhiteShare: z.number(),
+  silencesPerMinute: z.number(),
+  impactsPerMinute: z.number(),
+  buildsPerMinute: z.number(),
+  dropsPerMinute: z.number(),
+  loudnessRange: z.number(),
+  /** Relative cut density across 10 equal parts of the video (1 = its average). */
+  pacingCurve: z.array(z.number()),
+  introCutRate: z.number(),
+  outroCutRate: z.number(),
+});
+export type ReferenceStyle = z.infer<typeof ReferenceStyle>;
 
 export const StyleProfile = z.object({
   averageShotDuration: z.number(),
@@ -563,6 +630,8 @@ export const StyleProfile = z.object({
   transitionStyle: z.enum(["mostly_hard_cut", "mixed", "mostly_soft"]),
   visualDensity: z.enum(["low", "medium", "high"]),
   preferredStrategies: z.array(VisualStrategy),
+  /** Editing language measured from a reference video (reference/measure.ts); drives the timeline. */
+  reference: ReferenceStyle.optional(),
 });
 export type StyleProfile = z.infer<typeof StyleProfile>;
 

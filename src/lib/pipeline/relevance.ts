@@ -6,14 +6,19 @@
  * stock footage where specifics are needed, and repetition.
  */
 import type { EditorialVisualType, NormalizedAsset, VisualNeed } from "@/lib/domain/types";
+import type { EditorialBible } from "./bible";
 import { clamp } from "./engines";
 
 export interface RelevanceScores {
-  entityMatch: number;
-  eventMatch: number;
-  timeMatch: number;
+  /** 0-40: is the picture about the video's topic (editorial bible)? */
   topicMatch: number;
-  visualMatch: number;
+  /** 0-25: does it show the named person/place/thing? */
+  entityMatch: number;
+  /** 0-20: does it show what this line says (event, concept, right kind of visual)? */
+  narrationMatch: number;
+  /** 0-10: right time period? */
+  timeMatch: number;
+  /** 0-5 */
   quality: number;
   penalty: number;
   /** 1 when the picture is tagged with the story's country/place (atmosphere must be local). */
@@ -43,6 +48,10 @@ export interface RelevanceContext {
   storyNames?: string[];
   /** Typical year the story is set in (median of years mentioned). */
   storyYear?: number | null;
+  /** The project's editorial bible (topic vocabulary); topic relevance is judged against it. */
+  bible?: EditorialBible;
+  /** The reference is mostly live footage: prefer video for atmosphere. */
+  preferVideo?: boolean;
   recentProviders: string[];
   recentKinds: string[];
   /** Designed cards shown so far: text → start time (the same name card shouldn't keep returning). */
@@ -51,11 +60,18 @@ export interface RelevanceContext {
 
 /** Accept automatically at or above this; below it the fallback chain continues. */
 export const MIN_RELEVANCE = 50;
-/** An entity beat needs at least this entity score (the named thing must be in the picture). */
+/** An entity beat needs at least this raw entity score out of 30 (the named thing must be in the picture). */
 export const MIN_ENTITY = 18;
+/** The same bar on the stored 0-25 entity scale. */
+export const MIN_ENTITY_SCORE = 15;
 
 const STOCK = new Set(["pexels", "pixabay"]);
 const COMMON = new Set("the and of in on at to for with from by a an is was were his her their this that new old man woman people city street photo image video file jpg png".split(" "));
+
+/** Everyday words that appear in many unrelated names (never enough on their own to match an entity). */
+const ORDINARY = new Set(
+  "people peoples national party labour labor liberal democratic republican union united council committee association society company group band crew street market road city town new old north south east west great royal king queen prince general public free central first world international music records record studio sound system news daily times post herald gazette observer guardian star sun church school college university hospital bank house hall park bridge airport station club team".split(" "),
+);
 
 const normalise = (s: string) =>
   ` ${s
@@ -78,11 +94,14 @@ function entityScore(hay: string, names: string[]): { score: number; matched: st
     const full = normalise(n).trim();
     if (!full) continue;
     const tokens = full.split(" ").filter((t) => t.length >= 3 && !COMMON.has(t));
+    // Names made of ordinary words ("People's National Party") must appear as the exact phrase:
+    // "people", "national" and "party" scattered through an Israeli newspaper's caption are not it.
+    const distinctive = tokens.filter((t) => !ORDINARY.has(t));
     let s = 0;
     if (hay.includes(` ${full} `)) s = 30;
-    else if (tokens.length > 1 && tokens.every((t) => hay.includes(` ${t} `))) s = 26;
-    else if (tokens.length && hay.includes(` ${tokens.at(-1)!} `) && tokens.at(-1)!.length >= 5) s = 18; // surname / distinctive word
-    else if (tokens.some((t) => t.length >= 6 && hay.includes(` ${t} `))) s = 10;
+    else if (tokens.length > 1 && tokens.length <= 3 && distinctive.length === tokens.length && tokens.every((t) => hay.includes(` ${t} `))) s = 26;
+    else if (distinctive.length && hay.includes(` ${distinctive.at(-1)!} `) && distinctive.at(-1)!.length >= 5) s = 18; // surname / distinctive word
+    else if (distinctive.some((t) => t.length >= 6 && hay.includes(` ${t} `))) s = 10;
     if (s > best) [best, matched] = [s, n];
   }
   return { score: best, matched };
@@ -191,13 +210,11 @@ export function scoreRelevance(asset: NormalizedAsset, need: VisualNeed, ctx: Re
     inTitle.score >= anywhere.score
       ? inTitle
       : { score: someoneElse ? Math.min(anywhere.score, 8) : Math.min(anywhere.score, 20), matched: anywhere.matched };
-  const entityMatch = names.length ? ent.score : 12; // atmospheric beats aren't about a named thing
 
   const topic = need.topic ?? [];
   const eventHits = topic.filter((t) => hay.includes(` ${normalise(t).trim()} `));
   // Event words matter for pictures OF the event; atmosphere isn't marked down for lacking them.
   const eventShot = ["event_photo", "archival_video", "newspaper", "document"].includes(need.visualType ?? "");
-  const eventMatch = eventHits.length ? clamp(eventHits.length * 13, 0, 25) : topic.length && eventShot ? 0 : 10;
 
   const want = need.year ?? null;
   const got = yearOf(asset);
@@ -241,17 +258,43 @@ export function scoreRelevance(asset: NormalizedAsset, need: VisualNeed, ctx: Re
   if (ctx.used.has(asset.id)) penalty += reuseAllowed(asset, need, ctx, names.length > 0 && ent.score >= MIN_ENTITY) ? 6 : 40;
   const lastTwo = ctx.recentProviders.slice(-2);
   if (lastTwo.length === 2 && lastTwo.every((p) => p === asset.provider)) penalty += 6;
+  // The reference edits with mostly live footage: atmosphere should move, not be another still.
+  const videoBonus = ctx.preferVideo && asset.type === "video" && ["b_roll", "establishing_shot", "location_photo", "abstract_background"].includes(need.visualType ?? "") ? 8 : 0;
   const kind = asset.type === "video" ? "video" : asset.archival ? "archival" : "photo";
   if (ctx.recentKinds.slice(-3).filter((k) => k === kind).length === 3) penalty += 5;
 
-  const total = clamp(Math.round(entityMatch + eventMatch + timeMatch + topicMatch + visualMatch + quality - penalty), 0, 100);
   const strongEntity = names.length > 0 && ent.score >= MIN_ENTITY;
-  const confidence = clamp((total - 30) / 55 + (strongEntity ? 0.12 : 0) - (foreign ? 0.2 : 0), 0, 1);
+
+  // --- The scorecard (sections 3 and 27 of the brief): TOPIC 40 · ENTITY 25 · NARRATION 20 ·
+  //     TIME 10 · QUALITY 5. "Would an editor put this here while the narrator says this?" ---
+  // Topic: is the picture about the video's subject at all? Judged against the editorial bible's
+  // vocabulary (the topic's words, its people/places and what they are), not the beat's keywords.
+  let topicScore: number;
+  if (ctx.bible) {
+    let weight = 0;
+    for (const [term, w] of ctx.bible.vocabulary) if (hay.includes(` ${term} `)) weight += w;
+    topicScore = clamp(Math.round(weight * 5) + (strongEntity ? 15 : 0), 0, 40);
+  } else topicScore = clamp(Math.round(((topicMatch + (strongEntity ? 10 : 0)) / 25) * 40), 0, 40);
+  const entityScore25 = names.length ? Math.round((ent.score / 30) * 25) : 10;
+  const narrationScore = clamp((eventHits.length ? Math.min(10, eventHits.length * 7) : eventShot && topic.length ? 0 : 4) + Math.round(overlap * 8) + Math.round(visualMatch * 0.4), 0, 20);
+  const timeScore = Math.round((timeMatch / 15) * 10);
+  const total = clamp(Math.round(topicScore + entityScore25 + narrationScore + timeScore + quality + videoBonus - penalty), 0, 100);
+  const confidence = clamp((total - 30) / 55 + (strongEntity ? 0.12 : 0) - (foreign ? 0.2 : 0) - (topicScore < 10 ? 0.1 : 0), 0, 1);
 
   return {
     asset,
     total,
-    scores: { entityMatch, eventMatch, timeMatch, topicMatch, visualMatch, quality, penalty, placeMatch: countryHit || placeHit ? 1 : 0, conceptMatch: qTokens.filter((t) => hay.includes(` ${t} `) && t !== ctx.country?.toLowerCase()).length, confidence: Math.round(confidence * 100) / 100 },
+    scores: {
+      topicMatch: topicScore,
+      entityMatch: entityScore25,
+      narrationMatch: narrationScore,
+      timeMatch: timeScore,
+      quality,
+      penalty,
+      placeMatch: countryHit || placeHit ? 1 : 0,
+      conceptMatch: qTokens.filter((t) => hay.includes(` ${t} `) && t !== ctx.country?.toLowerCase()).length,
+      confidence: Math.round(confidence * 100) / 100,
+    },
     reason: explain(need, asset, { ent, eventHits, want, got, foreign: Boolean(foreign), countryHit: countryHit > 0 }),
   };
 }
@@ -279,7 +322,9 @@ export function accepts(r: RelevanceResult, need: VisualNeed, stage: "primary" |
   if (r.scores.penalty >= 40) return false; // already used
   const named = (need.entities?.length ?? 0) > 0;
   const specific = named && ["person_photo", "event_photo", "document", "album_art"].includes(need.visualType ?? "");
-  if (specific && r.scores.entityMatch < MIN_ENTITY) return false;
+  if (specific && r.scores.entityMatch < MIN_ENTITY_SCORE) return false;
+  // Low on topic AND on narration: not something an editor would put here (section 3).
+  if (r.scores.topicMatch < 12 && r.scores.narrationMatch < 8) return false;
   // Atmosphere (b-roll, establishing, location) isn't about a named thing but must be local and
   // on-tone: a Jamaican street, not a street in Seoul.
   const atmospheric = !specific && ["b_roll", "establishing_shot", "location_photo", "abstract_background", "archival_video"].includes(need.visualType ?? "");

@@ -14,6 +14,7 @@ import { makeDirector, parseSettings, resolveStyle } from "@/lib/data/project";
 import { Transcript } from "@/lib/domain/types";
 import { FileSearchCache } from "@/lib/media/cache";
 import { generateEdit, type GenerateResult } from "@/lib/pipeline/generate";
+import { analyzeReferenceVideo } from "@/lib/reference/analyze";
 import { resolveCredentials } from "@/lib/settings/apiKeys";
 import { createAdminClient } from "@/lib/supabase/admin";
 
@@ -105,7 +106,7 @@ function metrics(r: GenerateResult) {
     if (!need?.entities?.length || !["person_photo", "event_photo", "document"].includes(need.visualType ?? "")) continue;
     named.beats++;
     if (s.asset.provider === "graphic") named.card++;
-    else if (Number(s.scores?.entityMatch ?? 0) >= 18) named.exactMedia++;
+    else if (Number(s.scores?.entityMatch ?? 0) >= 15) named.exactMedia++;
     else named.otherMedia++;
   }
   const transitions: Record<string, number> = {};
@@ -142,8 +143,23 @@ async function main() {
     transcript = { ...transcript, words, duration: words.at(-1)?.end ?? cut, text: words.map((w) => w.word).join(" ") };
   }
   const settings = parseSettings(project.settings);
+  // Topic / context / reference overrides for testing: --topic="…" --context="…" --reference=file.mp4
+  const flag = (name: string) => rest.find((a) => a.startsWith(`--${name}=`))?.slice(name.length + 3);
+  if (flag("topic")) settings.topic = flag("topic")!;
+  if (flag("context")) settings.context = flag("context")!;
+  settings.musicTrack = "auto";
   const db = createAdminClient();
-  const style = await resolveStyle(db, project.style_profile_id, settings);
+  let style = await resolveStyle(db, project.style_profile_id, settings);
+  const refFile = flag("reference");
+  if (refFile) {
+    const cacheFile = path.join(OUT, `${path.basename(refFile)}.profile.json`);
+    let profile = await readFile(cacheFile, "utf8").then((t) => JSON.parse(t)).catch(() => null);
+    if (!profile) {
+      profile = (await analyzeReferenceVideo(path.resolve(refFile), { workDir: path.join(process.cwd(), ".cache", "measure"), source: refFile })).profile;
+      await writeFile(cacheFile, JSON.stringify(profile, null, 1));
+    }
+    style = profile;
+  }
   const creds = await resolveCredentials(project.user_id);
   const director = makeDirector(null, settings);
   const t0 = Date.now();
@@ -156,21 +172,34 @@ async function main() {
   const lines: string[] = [];
   for (const p of result.plans) {
     const sb = p.storyboard;
-    lines.push(`\n=== ${p.sceneId} ${p.startTime.toFixed(1)}–${p.endTime.toFixed(1)}s · ${p.visualStrategy} · ${p.transition}${sb ? ` · intent=${sb.intent} feel=${sb.feel} intensity=${sb.intensity} music=${sb.musicMood} pacing=${sb.pacing}` : ""}`);
+    lines.push(`\n=== ${p.sceneId} ${p.startTime.toFixed(1)}–${p.endTime.toFixed(1)}s · ${p.visualStrategy} · ${p.transition}${sb ? ` · ${sb.attention ?? ""} intent=${sb.intent} feel=${sb.feel} intensity=${sb.intensity} music=${sb.musicMood} pacing=${sb.pacing}${sb.silences?.length ? ` SILENCE@${sb.silences[0]!.at.toFixed(1)}` : ""} sfx=${p.sfx.map((c) => c.kind).join("+") || "-"}` : ""}`);
     lines.push(`   "${p.narration}"`);
     if (sb) lines.push(`   entities: ${JSON.stringify(sb.entities)}`);
     for (const s of result.selections.filter((x) => x.sceneId === p.sceneId)) {
       const conf = s.scores && "confidence" in s.scores ? ` conf=${Number(s.scores.confidence).toFixed(2)}` : "";
-      lines.push(`   ${s.start.toFixed(1).padStart(6)}s +${s.duration.toFixed(1)}s ${s.role === "meme" ? "MEME " : ""}[${s.needType}] ${s.asset.provider}/${s.asset.type}: ${s.asset.title.slice(0, 80)}  (score ${s.overall}${conf})`);
+      const topicS = s.scores && "topicMatch" in s.scores ? ` topic=${s.scores.topicMatch}` : "";
+      lines.push(`   ${s.start.toFixed(1).padStart(6)}s +${s.duration.toFixed(1)}s ${(s.transitionIn ?? "hard_cut").padEnd(12)} ${s.role === "meme" ? "MEME " : ""}[${s.needType}] ${s.asset.provider}/${s.asset.type}: ${s.asset.title.slice(0, 80)}  (score ${s.overall}${topicS}${conf})`);
       lines.push(`            q=${JSON.stringify(s.queries.slice(0, 3))} · ${s.reason}`);
     }
   }
   const m = metrics(result);
-  const summary = `Project ${project.name} (${id}) · label=${label} · ${result.plans.length} scenes · ${secs.toFixed(0)}s\n${JSON.stringify(m, null, 1)}`;
+  const history = (result.scoreHistory ?? []).map((h) => `pass ${h.pass}: total ${h.score.total} · topic ${h.score.topicRelevance} · narration ${h.score.narrationMatch} · variety ${h.score.visualVariety} · pacing ${h.score.pacing} · style ${h.score.referenceStyle} · sound ${h.score.soundDesign} · music ${h.score.musicDynamics} · transitions ${h.score.transitionVariety}${h.actions.length ? ` ← ${h.actions.map((a) => a.action).join("; ")}` : ""}`);
+  const final = result.scoreHistory?.at(-1)?.score;
+  const summary = [
+    `Project ${project.name} (${id}) · label=${label} · ${result.plans.length} scenes · ${secs.toFixed(0)}s`,
+    `TOPIC: ${settings.topic || "(none)"}`,
+    `BIBLE: ${JSON.stringify(result.bible)}`,
+    `TARGETS: ${JSON.stringify(result.targets)}`,
+    `TRANSITIONS: ${JSON.stringify(result.transitions)}`,
+    `MEASURED EDIT: ${JSON.stringify(final?.measurements)}`,
+    `SCORE:\n  ${history.join("\n  ")}`,
+    final?.notes.length ? `NOTES: ${final.notes.join(" ")}` : "",
+    JSON.stringify(m, null, 1),
+  ].join("\n");
   const reviewLines = (result.review ?? []).map((r) => `${r.clipId ?? r.sceneId} ${r.problem} → ${r.action}: ${r.reason}`);
   const text = `${summary}\n${lines.join("\n")}\n\nREVIEW (pass 2):\n${reviewLines.join("\n")}\n\nWARNINGS:\n${result.warnings.join("\n")}\n`;
   await writeFile(path.join(OUT, `${label}.txt`), text);
-  await writeFile(path.join(OUT, `${label}.json`), JSON.stringify({ metrics: m, plans: result.plans, selections: result.selections, review: result.review }, null, 1));
+  await writeFile(path.join(OUT, `${label}.json`), JSON.stringify({ metrics: m, settings, style, plans: result.plans, selections: result.selections, review: result.review, bible: result.bible, targets: result.targets, scoreHistory: result.scoreHistory }, null, 1));
   console.log(summary);
   console.log(`→ ${path.join(OUT, `${label}.txt`)}`);
 }

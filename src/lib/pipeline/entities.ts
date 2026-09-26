@@ -183,7 +183,18 @@ async function cached<T>(cache: SearchCache | undefined, key: unknown, fn: () =>
   const k = stableHash({ wiki: key });
   const hit = cache ? await cache.get(k).catch(() => null) : null;
   if (hit) return hit.results as unknown as T;
-  const value = await fn();
+  // Transient failures (timeouts, 429s) are retried: losing entity linking for a whole video
+  // because one request hiccupped would wreck every person/place beat.
+  let value: T | undefined;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      value = await fn();
+      break;
+    } catch (err) {
+      if (attempt >= 2) throw err;
+      await new Promise((r) => setTimeout(r, 600 * 2 ** attempt));
+    }
+  }
   await cache?.set(k, { provider: "wikipedia", query: JSON.stringify(key).slice(0, 200), results: value as never, timestamp: Date.now() }).catch(() => undefined);
   return value;
 }
@@ -263,6 +274,8 @@ export interface EntityOptions {
   cache?: SearchCache;
   /** Max mentions to look up on Wikipedia (each is one small request). */
   maxLookups?: number;
+  /** The project's VIDEO TOPIC (global context for linking). */
+  topic?: string;
   log?: (m: string) => void;
   signal?: AbortSignal;
 }
@@ -277,11 +290,24 @@ export async function buildEntityIndex(fullText: string, projectTitle: string, o
   for (const m of fullText.matchAll(KNOWN_COUNTRIES)) countryCounts.set(m[1]!, (countryCounts.get(m[1]!) ?? 0) + 1);
   const country = [...countryCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
 
-  const titleTerms = projectTitle
-    .toLowerCase()
-    .split(/[^a-z]+/)
-    .filter((w) => w.length > 2 && !["the", "and", "part", "episode", "documentary", "story", "video"].includes(w));
-  const context = [...new Set([...titleTerms, country?.toLowerCase()].filter(Boolean))].join(" ");
+  // Story terms: the title's words plus the topic's own proper names ("Gully", "Gaza") — never
+  // countries, demonyms or sentence starts.
+  const topicText = opts.topic ?? "";
+  const topicNames = [...topicText.matchAll(/(?<![.!?]\s)(?<!^)\b(\p{Lu}[\p{Ll}'-]{2,})\b/gu)]
+    .map((m) => m[1]!.toLowerCase())
+    .filter((w) => !new RegExp(`^(?:${KNOWN_COUNTRIES.source})n?$`, "i").test(w) && !DEMONYMS.test(w[0]!.toUpperCase() + w.slice(1)) && !(country && w.startsWith(country.toLowerCase().slice(0, 5))));
+  const titleTerms = [
+    ...new Set([
+      ...projectTitle
+        .toLowerCase()
+        .split(/[^a-z]+/)
+        .filter((w) => w.length > 2 && !["the", "and", "part", "episode", "documentary", "story", "video", "test", "editorial"].includes(w)),
+      ...topicNames,
+    ]),
+  ];
+  // The topic's subject noun after a demonym ("Jamaican dancehall" → dancehall) sharpens every lookup.
+  const subjectNoun = topicText.match(/\b\p{Lu}\p{Ll}+(?:an|ian|ese|ish)\s+(\p{Ll}{4,})\b/u)?.[1] ?? null;
+  const context = [...new Set([...titleTerms, subjectNoun, country?.toLowerCase()].filter(Boolean))].slice(0, 5).join(" ");
 
   const entities: Entity[] = [];
   const byTitle = new Map<string, Entity>();
@@ -328,6 +354,7 @@ export async function buildEntityIndex(fullText: string, projectTitle: string, o
   const lookups = remaining.slice(0, opts.maxLookups ?? 45);
   const candidates = new Map<Mention, Set<string>>();
   let online = true;
+  let failures = 0;
   const queue = [...lookups];
   const worker = async () => {
     while (online && queue.length) {
@@ -340,8 +367,10 @@ export async function buildEntityIndex(fullText: string, projectTitle: string, o
         if (r1.suggestion) (await wikiSearch(r1.suggestion, opts.cache)).hits.slice(0, 3).forEach((h) => set.add(h.title));
         (await wikiSearch(m.text, opts.cache)).hits.slice(0, 3).forEach((h) => set.add(h.title));
       } catch (err) {
-        log(`wikipedia lookup failed (${(err as Error).message}); continuing without entity linking`);
-        online = false;
+        // Give up on linking only after repeated failures (Wikipedia genuinely unreachable).
+        failures++;
+        log(`wikipedia lookup failed for "${m.text}" (${(err as Error).message})${failures >= 5 ? "; continuing without entity linking" : ""}`);
+        if (failures >= 5) online = false;
       }
       candidates.set(m, set);
     }

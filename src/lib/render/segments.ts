@@ -60,6 +60,10 @@ function motionExpr(type: MotionType, intensity: number, frames: number) {
       return { z: `${1 + I * 0.6}+${f(I * 0.4)}*${P}`, x: `(iw-iw/zoom)*${P}`, y: `(ih-ih/zoom)*${P}` };
     case "punch_in":
       return { z: `if(lt(${P},0.42),1+0.015*${P},${f(1 + Math.max(0.12, I * 1.6))})`, x: cx, y: cy };
+    case "document_scan":
+      return { z: `${f(1.45 + I)}-${f(0.18 + I)}*${P}`, x: `(iw-iw/zoom)*(0.18+0.25*${P})`, y: `(ih-ih/zoom)*(0.05+0.8*${P})` };
+    case "detail_punch":
+      return { z: `if(lt(${P},0.35),1+0.03*${P},${f(1.32 + I)})`, x: `(iw-iw/zoom)*0.42`, y: `(ih-ih/zoom)*0.22` };
     case "subtle_rotation":
       return { z: `${f(1.05 + I * 0.3)}`, x: cx, y: cy };
     default:
@@ -189,6 +193,13 @@ export function transitionFilters(t: VisualClip["transitionIn"], seconds: number
     case "whip":
       f += ",avgblur=sizeX=64:sizeY=1:enable='lt(t,0.2)',eq=brightness=0.06:enable='lt(t,0.2)'";
       break;
+    case "rgb_split":
+      f += ",rgbashift=rh=-22:bh=22:rv=5:bv=-5:enable='lt(t,0.3)'";
+      break;
+    case "shake":
+      // Camera shake that settles: offset crop of a slightly enlarged frame.
+      f += `,scale=iw*1.06:ih*1.06,crop=iw/1.06:ih/1.06:(iw-ow)/2+sin(t*63)*iw*0.018*max(0\\,1-t/0.4):(ih-oh)/2+cos(t*51)*ih*0.018*max(0\\,1-t/0.4)`;
+      break;
     default:
       break; // hard_cut; zoom is applied inside the motion expression
   }
@@ -196,6 +207,54 @@ export function transitionFilters(t: VisualClip["transitionIn"], seconds: number
   return f;
 }
 const f4 = (n: number) => Number(n.toFixed(3));
+
+/** Transitions that blend two shots (xfade), with the xfade kind and duration used. */
+export const BLEND_TRANSITIONS: Partial<Record<VisualClip["transitionIn"], { xfade: string; seconds: number }>> = {
+  dissolve: { xfade: "fade", seconds: 0.45 },
+  luma_fade: { xfade: "fadegrays", seconds: 0.5 },
+  wipe: { xfade: "smoothleft", seconds: 0.4 },
+  motion_blur: { xfade: "hblur", seconds: 0.3 },
+  dip_to_white: { xfade: "fadewhite", seconds: 0.35 },
+};
+
+/**
+ * Re-encode a rendered segment so it opens by blending out of the previous segment's last frame
+ * (dissolve, luma fade, wipe, motion blur, dip to white). Segments are rendered independently,
+ * so the outgoing shot is held on its final frame during the blend — a fraction of a second.
+ */
+export async function blendSegment(prevPath: string, curPath: string, t: VisualClip["transitionIn"], clipSeconds: number, fps: number, draft: boolean, outDir: string): Promise<string> {
+  const spec = BLEND_TRANSITIONS[t];
+  if (!spec) return curPath;
+  const seconds = Math.min(spec.seconds, clipSeconds * 0.4);
+  if (seconds < 0.1) return curPath;
+  const out = path.join(outDir, `${stableHash({ v: RENDERER_VERSION, prevPath, curPath, t, seconds, fps })}.blend.mp4`);
+  if (existsSync(out)) return out;
+  const hold = Math.max(1, Math.round(seconds * fps));
+  const tmp = `${out}.tmp.mp4`;
+  await runFfmpeg(
+    [
+      "-sseof", "-0.2", "-i", prevPath,
+      "-i", curPath,
+      "-filter_complex",
+      `[0:v]trim=end_frame=1,loop=loop=${hold - 1}:size=1:start=0,setpts=N/${fps}/TB,fps=${fps},format=yuv420p,settb=1/${fps}[a];` +
+        `[1:v]fps=${fps},format=yuv420p,settb=1/${fps}[b];[a][b]xfade=transition=${spec.xfade}:duration=${f(hold / fps)}:offset=0,format=yuv420p[out]`,
+      "-map", "[out]",
+      "-frames:v", String(Math.max(1, Math.round(clipSeconds * fps))),
+      "-r", String(fps),
+      "-c:v", "libx264",
+      "-preset", draft ? "ultrafast" : "veryfast",
+      "-crf", draft ? "26" : "18",
+      "-g", String(fps * 2),
+      "-pix_fmt", "yuv420p",
+      "-video_track_timescale", String(fps * 1000),
+      "-an",
+      tmp,
+    ],
+    { timeoutMs: 5 * 60_000 },
+  );
+  await rename(tmp, out);
+  return out;
+}
 
 /** Build and run the FFmpeg command for one timeline clip. */
 export async function renderSegment(spec: SegmentSpec, outDir: string): Promise<{ path: string; cached: boolean }> {

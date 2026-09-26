@@ -24,7 +24,10 @@ import type {
   VisualFallback,
   Word,
 } from "@/lib/domain/types";
+import { DEFAULT_SETTINGS } from "@/lib/domain/types";
+import type { EditorialBible } from "./bible";
 import { clamp } from "./engines";
+import { type EditingTargets, editingTargets } from "./style";
 import { CLICHES } from "./relevance";
 import type { Entity, EntityIndex } from "./entities";
 
@@ -389,6 +392,9 @@ interface BeatMemory {
   lastIdea: string | null;
   /** Alternates which main character stands in for "the rivalry". */
   castTurn: number;
+  bible: EditorialBible | null;
+  /** Target share of stills (photos/cards) vs live footage (reference/style). */
+  stillShare: number;
   /** People already given a beat in the current scene. */
   shownInScene: Set<string>;
 }
@@ -450,7 +456,8 @@ function planBeat(
     else type = "person_photo";
   } else if (focus?.kind === "organization") type = /party|government/i.test(focus.description ?? "") ? "event_photo" : "document";
   else if (focus?.kind === "event" || (event && years(text).length)) type = "event_photo";
-  else if (focus?.kind === "place") type = memory.lastType === "location_photo" || memory.lastType === "establishing_shot" ? (idea ? "b_roll" : "location_photo") : i === 0 ? "establishing_shot" : "location_photo";
+  // A place is shown as moving footage when the reference edits with mostly live footage.
+  else if (focus?.kind === "place") type = memory.lastType === "location_photo" || memory.lastType === "establishing_shot" ? (idea ? "b_roll" : "location_photo") : i === 0 || memory.stillShare < 0.45 ? "establishing_shot" : "location_photo";
   else if (scene.year && scene.year < 2000 && scene.intents.includes("archival")) type = "archival_video";
   else if (scene.intents.includes("transition") && i === 0 && memory.lastType !== "text_card") type = "text_card";
   else if (idea) type = memory.lastIdea === idea && country ? "location_photo" : "b_roll";
@@ -513,7 +520,10 @@ function planBeat(
       break;
     default: {
       const own = concept(text);
-      const variants = [q(idea, place ?? country), q(idea), q(own ?? idea, "night"), q(place ?? country, "street life")];
+      // The topic keeps atmosphere on-subject: "dancehall sound system", "Gully Gaza dancehall".
+      const anchor = memory.bible?.anchors.find((a) => a !== country) ?? null;
+      const storyTopic = memory.bible?.storyTerms.length && anchor ? q(memory.bible.storyTerms.join(" "), anchor) : null;
+      const variants = [q(anchor, idea), q(idea, place ?? country), q(idea), ...(storyTopic && /\b(rival\w*|beef|feud|versus|sides|war)\b/i.test(text) ? [storyTopic] : []), q(own ?? idea, "night"), q(place ?? country, "street life")];
       const k = own ? 0 : memory.beat % variants.length;
       queries = [...variants.slice(k), ...variants.slice(0, k)];
       description = idea ? `B-roll: ${idea}` : `Atmosphere for: ${shorten(text, 60)}`;
@@ -537,7 +547,7 @@ function planBeat(
 
   const card: CardSpec =
     type === "timeline_graphic" && year
-      ? { kind: "year", text: String(year), sub: shorten(keyLine(text), 60) }
+      ? { kind: "year", text: String(year), sub: cardLine(text, 60) }
       : type === "statistic_graphic"
       ? { kind: "statistic", text: (text.match(STAT)?.[0] ?? "").toUpperCase(), sub: shorten(text, 70) }
       : type === "text_card" && /["“]/.test(text)
@@ -546,7 +556,7 @@ function planBeat(
           ? { kind: "year", text: String(year), sub: name ?? event ?? null }
           : name && (focus?.kind === "person" || focus?.kind === "organization" || focus?.kind === "event")
             ? { kind: "name", text: name.toUpperCase(), sub: focus?.description ?? null }
-            : { kind: scene.intensity >= 7 ? "headline" : "chapter", text: shorten(keyLine(text), 48).toUpperCase(), sub: null };
+            : { kind: scene.intensity >= 7 ? "headline" : "chapter", text: cardLine(scene.text, 48).toUpperCase(), sub: null };
 
   // Tone: a scene about politics, violence or a feud must not cut to holiday imagery; and no
   // plants/animals unless the narration is about them.
@@ -579,7 +589,8 @@ function planBeat(
     stockAllowed: STOCK_OK.includes(type),
     // Streets, neighbourhoods and rallies must be local; a studio microphone can be anywhere.
     // A card needs a whole thought: fragments of a rapid beat ("ABOUT TO BECOME") use the scene's key line.
-    line: shorten(keyLine(text.split(/\s+/).length >= 6 ? text : scene.text), 56).replace(/[,;:]+$/, "").toUpperCase(),
+    // A card states a whole thought: the scene's key sentence, never a fragment of a beat.
+    line: cardLine(scene.text, 56).toUpperCase(),
     local: !(type === "b_roll" && idea !== null && PLACE_FREE_CONCEPTS.has(idea)),
     fallbacks,
     card,
@@ -596,6 +607,25 @@ const NATURE = ["flower", "plant", "species", "cultivar", "orchid", "leaf", "lea
 function genericAvoid(t: EditorialVisualType): string[] {
   if (t === "b_roll" || t === "establishing_shot" || t === "abstract_background") return [];
   return ["stock footage", "abstract", "illustration", "3d render", "cartoon"];
+}
+
+const TRAILING_FILLER = /\s+(a|an|the|to|for|of|and|or|but|in|on|at|with|by|from|that|this|as|is|was|were|be|it|its|his|her|their|so|then)$/i;
+
+/**
+ * Card text that reads as a statement: the whole sentence if it fits, otherwise its most
+ * informative clause — never a fragment ending on a filler word ("PUBLICLY CALLING FOR AN").
+ */
+export function cardLine(text: string, max = 52): string {
+  const line = keyLine(text).trim();
+  if (line.length <= max) return line;
+  const clauses = line.split(/\s*[,;:—–]\s*|\s+(?=because|which|while|and then|but)\b/i).map((c) => c.trim()).filter((c) => c.split(/\s+/).length >= 3);
+  const content = (c: string) => c.split(/\s+/).filter((w) => w.length > 3).length;
+  const fit = clauses.filter((c) => c.length <= max).sort((a, b) => content(b) - content(a))[0];
+  if (fit) return fit.replace(TRAILING_FILLER, "");
+  let cut = line.slice(0, max);
+  cut = cut.slice(0, Math.max(cut.lastIndexOf(" "), max * 0.5));
+  while (TRAILING_FILLER.test(cut)) cut = cut.replace(TRAILING_FILLER, "");
+  return `${cut}…`;
 }
 
 /** The most "headline-like" part of a line, for text cards. */
@@ -639,10 +669,10 @@ function transitionFor(
 }
 
 function sfxFor(
-  board: { intents: EditorialIntent[]; intensity: number; beats: PlannedBeat[]; transition: Transition; role: string | null },
+  board: { intents: EditorialIntent[]; intensity: number; beats: PlannedBeat[]; transition: Transition; role: string | null; attention: Attention; silences: { at: number; duration: number }[] },
   sceneStart: number,
   sceneDur: number,
-  style: StyleProfile,
+  budget: { perMinute: number; debt: number },
   text: string,
 ): { cues: SfxCue[]; why: string } {
   const cues: SfxCue[] = [];
@@ -670,25 +700,102 @@ function sfxFor(
   if (/\b(it wasn't\.|or so (?:we|they) thought|not quite)\b/i.test(text) && board.intensity < 8) add("record_scratch", 0.1, "ironic reversal");
   if (/\b(crowd|fans|audience)\b/i.test(text) && board.intensity >= 5) add("crowd", 0.4, "crowd mentioned");
 
-  // Budget: not on every cut (≈ one per 5 s, scaled by the style), climaxes may exceed it.
-  const budget = Math.max(1, Math.round((sceneDur / 5) * (0.5 + style.sfxFrequency)));
-  const priority = ["bass_hit", "riser", "glitch", "impact", "camera_shutter", "paper", "news_ambience", "heartbeat", "record_scratch", "whoosh", "typing", "notification", "radio_static", "vinyl", "crowd"];
+  // Make hard cuts land in energetic stretches: a whoosh into a quick cut, an impact on a punch.
+  if (board.attention === "escalation" || board.attention === "hook" || board.attention === "climax") {
+    const cut = board.beats[1];
+    if (cut) add("whoosh", rel(cut.start) - 0.12, "sound bridge into a quick cut");
+    if (board.beats[2]) add("impact", rel(board.beats[2].start) + 0.02, "punch on the cut");
+  }
+  for (const s of board.silences) add("impact", rel(s.at + s.duration) + 0.02, "hit after the silence");
+
+  // Budget from the reference/style (SFX per minute), weighted by the attention map and carried
+  // across scenes so the whole edit lands near the target — never an SFX on every cut.
+  const weight = { climax: 2, escalation: 1.5, reveal: 1.6, buildup: 1.3, hook: 1.3, aftermath: 0.4, conclusion: 0.5, setup: 0.7, context: 0.7 }[board.attention] ?? 1;
+  budget.debt += (sceneDur / 60) * budget.perMinute * weight;
+  const allowed = Math.floor(budget.debt);
+  const priority = ["bass_hit", "impact", "riser", "glitch", "camera_shutter", "paper", "heartbeat", "news_ambience", "record_scratch", "whoosh", "typing", "notification", "radio_static", "vinyl", "crowd"];
   const sorted = cues.sort((a, b) => priority.indexOf(a.kind) - priority.indexOf(b.kind));
   const seen = new Set<string>();
-  const kept = sorted.filter((c) => !seen.has(c.kind) && seen.add(c.kind)).slice(0, board.role === "climax" ? budget + 1 : budget);
+  const kept = sorted.filter((c) => !seen.has(`${c.kind}${Math.round(c.at)}`) && seen.add(`${c.kind}${Math.round(c.at)}`)).slice(0, Math.max(0, allowed));
+  budget.debt -= kept.length;
   return { cues: kept.sort((a, b) => a.at - b.at), why: kept.length ? kept.map((c) => `${c.kind} (${c.reason})`).join(", ") : "no effect — the narration carries this scene" };
+}
+
+// ---------------------------------------------------------------------------
+// Attention map (hook → conclusion) and silences
+// ---------------------------------------------------------------------------
+
+export type Attention = "hook" | "setup" | "context" | "buildup" | "escalation" | "reveal" | "climax" | "aftermath" | "conclusion";
+
+function attentionFor(i: number, n: number, start: number, total: number, role: string | null, intents: EditorialIntent[], intensity: number): Attention {
+  if (start < Math.min(25, total * 0.07)) return "hook";
+  if (i >= n - 1 || start > total * 0.93) return "conclusion";
+  if (role === "climax") return "climax";
+  if (role === "buildup") return "buildup";
+  if (role === "aftermath") return "aftermath";
+  if (intents.includes("dramatic_reveal") && intensity >= 6) return "reveal";
+  if (intensity >= 7) return "escalation";
+  if (start < total * 0.25) return "setup";
+  return "context";
+}
+
+/** Beat-length multiplier per attention role (on top of pacing and the reference curve). */
+const ATTENTION_PACE: Record<Attention, number> = { hook: 1, setup: 0.95, context: 1, buildup: 0.85, escalation: 0.75, reveal: 1, climax: 0.8, aftermath: 1.25, conclusion: 1.2 };
+
+/** The line a silence should precede: a short, grave or surprising sentence ("It wasn't."). */
+function silenceCandidate(sceneWords: Word[], intensity: number): { at: number; score: number } | null {
+  let best: { at: number; score: number } | null = null;
+  let sentenceStart = 0;
+  for (let i = 0; i < sceneWords.length; i++) {
+    const endsSentence = /[.!?]["')\]]*$/.test(sceneWords[i]!.word);
+    if (!endsSentence) continue;
+    const sentence = sceneWords.slice(sentenceStart, i + 1).map((w) => w.word).join(" ");
+    const wordsN = i + 1 - sentenceStart;
+    const shock = count(SHOCK, sentence) + count(GRAVE, sentence) + (/^it wasn'?t\b|^then\b|^but\b/i.test(sentence) ? 1 : 0);
+    // (A scene's first sentence can be the reveal too — "It wasn't." often opens one.)
+    if (shock && wordsN <= 14) {
+      const gap = sentenceStart > 0 ? sceneWords[sentenceStart]!.start - sceneWords[sentenceStart - 1]!.end : 0.3;
+      const score = shock * 2 + intensity / 3 + (wordsN <= 6 ? 2 : 0) + Math.min(1, gap * 2);
+      if (!best || score > best.score) best = { at: sceneWords[sentenceStart]!.start, score };
+    }
+    sentenceStart = i + 1;
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
 // Whole-video storyboard
 // ---------------------------------------------------------------------------
 
-export function buildStoryboards(scenes: StoryboardScene[], words: Word[], index: EntityIndex, style: StyleProfile): Map<string, SceneBoard> {
+export interface StoryboardOptions {
+  bible?: EditorialBible;
+  targets?: EditingTargets;
+}
+
+export function buildStoryboards(scenes: StoryboardScene[], words: Word[], index: EntityIndex, style: StyleProfile, opts: StoryboardOptions = {}): Map<string, SceneBoard> {
   const texts = scenes.map((s) => s.narration);
   const curve = intensityCurve(texts);
   const out = new Map<string, SceneBoard>();
-  const styleScale = clamp(style.averageShotDuration / 3.8, 0.6, 1.6);
-  const memory: BeatMemory = { person: null, people: [], lastType: null, lastFocus: null, carded: new Map(), sceneIndex: 0, beat: 0, lastIdea: null, castTurn: 0, shownInScene: new Set() };
+  const targets = opts.targets ?? editingTargets(style, DEFAULT_SETTINGS);
+  // Beat lengths follow the target shot length (measured from the reference when there is one);
+  // measured: the default ranges with holds and attention pacing average ~3.8 s at scale 1.
+  const styleScale = clamp(targets.shotSeconds / 3.8, 0.4, 2.2);
+  // A reference with uneven shot lengths (bursts and long holds) widens the ranges.
+  const spread = clamp(targets.shotVariation - 0.55, -0.3, 0.7);
+  const total = scenes.at(-1)?.endTime ?? 1;
+  const sfxBudget = { perMinute: targets.sfxPerMinute, debt: 0.5 };
+  // Silences: the strongest reveal lines, as many as the reference's silence rate allows.
+  const silenceCount = Math.round((total / 60) * targets.silencesPerMinute);
+  const silenceAt = new Map<number, { at: number; duration: number }>();
+  if (silenceCount > 0) {
+    const cands = scenes
+      .map((s, i) => ({ i, c: silenceCandidate(words.filter((w) => w.start >= s.startTime - 0.05 && w.end <= s.endTime + 0.05), curve.value[i]!) }))
+      .filter((x): x is { i: number; c: { at: number; score: number } } => x.c !== null && x.i > 0)
+      .sort((a, b) => b.c.score - a.c.score)
+      .slice(0, silenceCount);
+    for (const { i, c } of cands) silenceAt.set(i, { at: Math.max(0, c.at - 0.55), duration: 0.5 });
+  }
+  const memory: BeatMemory = { person: null, people: [], lastType: null, lastFocus: null, carded: new Map(), sceneIndex: 0, beat: 0, lastIdea: null, castTurn: 0, shownInScene: new Set(), bible: opts.bible ?? null, stillShare: targets.stillShare };
   let prevTransition: Transition | null = null;
   let era: number | null = null;
   let eraScene = -99;
@@ -704,7 +811,11 @@ export function buildStoryboards(scenes: StoryboardScene[], words: Word[], index
     const intents = classify(text, ents, role, intensity);
     const intent = PRIORITY.find((p) => intents.includes(p)) ?? "fact";
     const feel = feelFor(intents, intensity, text);
-    const pacing = pacingFor(intensity, role);
+    const attention = attentionFor(i, scenes.length, s.startTime, total, role, intents, intensity);
+    const basePacing = pacingFor(intensity, role);
+    // The hook opens fast; escalation never plods.
+    const pacing = (attention === "hook" || attention === "escalation") && (basePacing === "slow" || basePacing === "normal") ? "fast" : attention === "conclusion" && basePacing !== "slow" ? "normal" : basePacing;
+    const silences = silenceAt.has(i) ? [silenceAt.get(i)!] : [];
     const musicMood = musicFor(feel, intents, intensity);
     const y = years(text);
     // A year stays "current" for the next scene only; older years must not leak into queries.
@@ -715,7 +826,12 @@ export function buildStoryboards(scenes: StoryboardScene[], words: Word[], index
 
     const sceneWords = words.filter((w) => w.start >= s.startTime - 0.05 && w.end <= s.endTime + 0.05);
     const [lo, hi] = BEAT_RANGE[pacing];
-    const range: [number, number] = [lo * styleScale, hi * styleScale];
+    // Position in the video follows the reference's pacing curve; the opening follows its intro rate.
+    const pos = s.startTime / total;
+    const k = styleScale * targets.pacingAt(pos) * ATTENTION_PACE[attention] * (attention === "hook" ? 1 / Math.pow(targets.introSpeedup, 0.7) : 1);
+    // Uneven references (bursts + long holds) stretch both ends; calm stretches hold longer still.
+    const hold = attention === "aftermath" || attention === "conclusion" || pacing === "slow" ? 1 + spread : 1;
+    const range: [number, number] = [lo * k * (1 - spread * 0.6), hi * k * (1 + spread * 1.1) * hold];
     const spans = beatSpans(clauses(sceneWords, s.startTime, s.endTime), range, s.startTime, s.endTime);
     const beats = spans.map((span, bi) => {
       const b = planBeat(span, bi, { text, intents, intensity, year: era, pacing }, index, memory);
@@ -742,17 +858,20 @@ export function buildStoryboards(scenes: StoryboardScene[], words: Word[], index
     // Inside rapid climaxes, the first quick cut punches in.
     if (pacing === "rapid" && beats.length > 2) beats[1]!.transition = "zoom";
 
-    const sfx = sfxFor({ intents, intensity, beats, transition: tr.t, role }, s.startTime, s.endTime - s.startTime, style, text);
+    const sfx = sfxFor({ intents, intensity, beats, transition: tr.t, role, attention, silences }, s.startTime, s.endTime - s.startTime, sfxBudget, text);
     const memeOk = (intents.includes("comedic") || intents.includes("ironic")) && intensity < 7 && !intents.includes("emotional") && !intents.includes("political");
     const memeReason = memeOk
       ? `meme_opportunity = true: ${intents.includes("ironic") ? "ironic" : "comedic"} line in a light scene`
       : `meme_opportunity = false: ${intents.includes("emotional") ? "emotional scene" : intensity >= 7 ? "high-intensity scene" : intents.includes("political") ? "serious political context" : "no comedic or ironic moment"}`;
 
     const name = beats.find((b) => b.focus)?.focus ?? null;
+    // Text emphasis: statistics always; the hook's and climax's key line; reveals as often as the
+    // style's text frequency allows.
+    const emphasise = attention === "hook" ? i === 0 && targets.textFrequency > 0.03 : attention === "reveal" ? (i * 7919) % 100 < targets.textFrequency * 300 : false;
     const text2 = STAT.test(text)
       ? { text: (text.match(STAT)?.[0] ?? "").toUpperCase(), style: "statistic" as const, position: "center" as const }
-      : role === "climax" && text.split(/\s+/).length > 3
-        ? { text: shorten(keyLine(text), 34).toUpperCase(), style: "dramatic" as const, position: "center" as const }
+      : (role === "climax" || emphasise) && text.split(/\s+/).length > 3
+        ? { text: cardLine(text, 38).toUpperCase(), style: "dramatic" as const, position: "center" as const }
         : null;
 
     const storyboard: Storyboard = {
@@ -770,6 +889,8 @@ export function buildStoryboards(scenes: StoryboardScene[], words: Word[], index
       transitionReason: tr.why,
       memeReason,
       beats: beats.map(({ start, end, text: t, visualType, focus, description, queries, cut }) => ({ start, end, text: t, visualType, focus, description, queries, cut })),
+      attention,
+      silences,
     };
     out.set(s.sceneId, { storyboard, beats, sfx: sfx.cues, transition: tr.t, text: text2, memeAllowed: memeOk });
   });

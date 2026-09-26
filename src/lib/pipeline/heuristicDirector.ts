@@ -29,6 +29,7 @@ import {
 } from "./director";
 import { chooseMotion, clamp, kindOf, preferredNeedType, seeded, splitSceneDurations, targetShotDuration } from "./engines";
 import type { SceneBoard } from "./storyboard";
+import { editingTargets } from "./style";
 import type { Sentence } from "./transcript";
 
 const STOP = new Set(
@@ -348,6 +349,7 @@ export class HeuristicDirector implements Director {
 
   async refineClips(clips: DraftClip[], ctx: DirectorContext): Promise<ClipDecision[]> {
     let prev = clips[0]?.previousMotion;
+    const targets = editingTargets(ctx.style, ctx.settings);
     return clips.map((c) => {
       const rand = seeded(c.clipId);
       const isStill = c.asset.type === "photo";
@@ -359,7 +361,14 @@ export class HeuristicDirector implements Director {
               ? "polaroid"
               : "paper_card"
             : "fullscreen";
-      const motion = isStill ? chooseMotion(c.asset.width, c.asset.height, prev, c.suggestedMotion, c.clipId) : rand() < 0.25 ? "punch_in" : "none";
+      // Stills move as often as the reference animates its photos; documents are scanned
+      // (headline first, then down the page); some portraits punch into a detail.
+      let motion: ClipDecision["motion"];
+      if (layout === "article") motion = "document_scan";
+      else if (!isStill) motion = rand() < 0.25 ? "punch_in" : "none";
+      else if (rand() > targets.photoAnimationShare) motion = "none";
+      else if ((c.asset.height ?? 0) > (c.asset.width ?? 1) && rand() < 0.35 && prev !== "detail_punch") motion = "detail_punch";
+      else motion = chooseMotion(c.asset.width, c.asset.height, prev, c.suggestedMotion, c.clipId);
       prev = motion;
       const annotations: ClipDecision["annotations"] =
         layout === "article"
@@ -376,8 +385,8 @@ export class HeuristicDirector implements Director {
         clipId: c.clipId,
         layout,
         motion,
-        motionIntensity: 0.1,
-        blackAndWhite: c.asset.archival && rand() < ctx.style.blackAndWhiteFrequency * 3,
+        motionIntensity: Math.round(0.1 * targets.motion * 1000) / 1000,
+        blackAndWhite: c.asset.archival && rand() < targets.blackAndWhiteShare * 3,
         annotations,
       };
     });

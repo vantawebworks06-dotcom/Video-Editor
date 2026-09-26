@@ -21,6 +21,7 @@ function typesFor(t: EditorialVisualType | undefined): AssetType[] {
       return ["photo", "video"];
     case "b_roll":
     case "establishing_shot":
+    case "location_photo":
     case "abstract_background":
     case "interview":
     case "music_video_reference":
@@ -65,7 +66,8 @@ export function editorialSearch(
 }
 
 export interface EditorialPick {
-  selection: SceneSelection;
+  /** null = hold the previous shot (the only option left was the card that is already on screen). */
+  selection: SceneSelection | null;
   /** Every scored candidate (best first) — the quality-control pass swaps from these. */
   ranked: RelevanceResult[];
 }
@@ -124,7 +126,17 @@ export async function selectEditorial(
     return base(cardAsset(c, why), null, why);
   };
 
-  if (need.type === "graphic") return { selection: card(), ranked: [] };
+  // The same card again within a few seconds reads as a freeze: hold the previous shot instead.
+  const repeatsCard = (sel: SceneSelection) => {
+    const last = rel.recentCards?.get(sel.asset.title);
+    return last !== undefined && start - last < 12;
+  };
+  if (need.type === "graphic") {
+    const sel = card();
+    if (repeatsCard(sel)) return { selection: null, ranked: [] };
+    rel.recentCards?.set(sel.asset.title, start);
+    return { selection: sel, ranked: [] };
+  }
 
   const attempts = [
     { visualType: need.visualType, queries: need.queries, stockAllowed: need.stockAllowed ?? false, stage: "primary" as const, description: need.description },
@@ -167,8 +179,27 @@ export async function selectEditorial(
       return { selection: sel, ranked: all };
     }
   }
-  // Nothing relevant: a designed card, not whatever looked vaguely similar.
+  // Atmosphere that just missed the bar: an on-topic picture of the right place (a Kingston street
+  // for a line about Kingston politics) serves the edit better than a text card of the line.
+  const atmospheric = ["b_roll", "establishing_shot", "location_photo", "abstract_background"].includes(need.visualType ?? "");
+  if (atmospheric) {
+    const near = all.find((r) => r.scores.topicMatch >= 15 && r.scores.placeMatch === 1 && r.scores.penalty < 14 && r.total >= 38 && !rel.used.has(r.asset.id));
+    if (near) {
+      const sel = base(near.asset, near, `Closest available on-topic ${need.visualType?.replace(/_/g, " ")} (relevance ${near.total}): nothing more specific exists for this line. ${near.reason}`);
+      return { selection: sel, ranked: all };
+    }
+  }
+  // Nothing relevant: a designed card, not whatever looked vaguely similar. But never the same
+  // card twice in a few seconds (a montage would freeze on it): then the best on-topic image —
+  // even one already shown — keeps the sequence moving.
+  const plannedText = need.card?.kind === "name" ? need.card.text : (need.line ?? need.card?.text ?? "");
+  const shownAt = rel.recentCards?.get(plannedText);
+  if (shownAt !== undefined && start - shownAt < 12) {
+    const keep = all.find((r) => r.scores.topicMatch >= 15 && r.total >= 35 && r.scores.penalty < 46);
+    if (keep) return { selection: base(keep.asset, keep, `Closest available image — the same card was on screen seconds ago, so an on-topic image keeps the sequence moving. ${keep.reason}`), ranked: all };
+  }
   const sel = card();
+  if (repeatsCard(sel)) return { selection: null, ranked: all };
   rel.recentCards?.set(sel.asset.title, start);
   return { selection: sel, ranked: all };
 }

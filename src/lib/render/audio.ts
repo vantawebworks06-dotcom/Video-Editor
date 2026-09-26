@@ -64,8 +64,10 @@ export function buildAudioGraph(t: Timeline, firstInput: number): AudioGraph {
       const len = c.end - c.start;
       const ms = Math.round(c.start * 1000);
       const gain = `volume='${gainExpression(c.gains)}':eval=frame`;
+      // Silences: the music stops (short ramps avoid clicks) and returns on the hit.
+      const mute = (c.mutes ?? []).map((m) => `max(0,max(min(1,(${m.from.toFixed(3)}-t)/0.08),min(1,(t-${m.to.toFixed(3)})/0.12)))`).join("*");
       const fades = `afade=t=in:d=${Math.min(c.fadeIn, len / 2).toFixed(3)},afade=t=out:st=${Math.max(0, len - c.fadeOut).toFixed(3)}:d=${Math.min(c.fadeOut, len / 2).toFixed(3)}`;
-      filters.push(`[${i}:a]${fmt},atrim=start=${c.offset.toFixed(3)}:duration=${len.toFixed(3)},asetpts=PTS-STARTPTS,volume=${(mix.musicVolume * c.trim).toFixed(3)},${gain},${fades},adelay=${ms}|${ms}[mc${k}]`);
+      filters.push(`[${i}:a]${fmt},atrim=start=${c.offset.toFixed(3)}:duration=${len.toFixed(3)},asetpts=PTS-STARTPTS,volume=${(mix.musicVolume * c.trim).toFixed(3)},${gain}${mute ? `,volume='${mute}':eval=frame` : ""},${fades},adelay=${ms}|${ms}[mc${k}]`);
       labels.push(`[mc${k}]`);
     });
     filters.push(`${labels.join("")}amix=inputs=${labels.length}:normalize=0:duration=longest:dropout_transition=0,apad,atrim=0:${D}[musicraw]`);

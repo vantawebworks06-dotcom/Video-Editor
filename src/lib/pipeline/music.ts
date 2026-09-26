@@ -5,7 +5,9 @@
  * explanation, building underneath tension, a short drop right before a climax and a hard hit on
  * it, a lower bed for the aftermath). Voice-keyed ducking in the mixer keeps narration on top.
  */
-import type { MusicCue, MusicMood, ProjectSettings, ScenePlan } from "@/lib/domain/types";
+import type { MusicCue, MusicMood, ProjectSettings, ScenePlan, StyleProfile } from "@/lib/domain/types";
+import { getPreset } from "@/lib/domain/presets";
+import { editingTargets, type EditingTargets } from "./style";
 import { MUSIC_TRACKS } from "@/lib/render/libraryTracks";
 
 /** Mood → generated bed (see scripts/generate-library.ts). */
@@ -35,15 +37,15 @@ export const TRACK_TRIM: Record<string, number> = Object.fromEntries(
     .map(([k, v]) => [k, Math.round(v * 2 * 1000) / 1000]),
 );
 
-const MIN_SECTION = 14;
-
-function sceneGain(p: ScenePlan): number {
+function sceneGain(p: ScenePlan, t: EditingTargets): number {
   const sb = p.storyboard;
   const I = sb?.intensity ?? Math.round(p.intensity.importance * 10);
   let g = 0.6 + 0.065 * I;
   if (sb?.intents.includes("climax")) g += 0.12;
   if (sb?.intents.includes("aftermath")) g = Math.min(g, 0.72);
-  return Math.round(g * 1000) / 1000;
+  // Dynamics follow the reference's loudness range / the user's music intensity.
+  g = 0.9 + (g - 0.9) * t.music.depth;
+  return Math.round(Math.max(0.2, g) * 1000) / 1000;
 }
 
 export interface MusicPlanInput {
@@ -54,6 +56,8 @@ export interface MusicPlanInput {
   resolveTrack: (key: string) => string | null;
   /** The project's uploaded music file, when settings.musicTrack === "uploaded". */
   uploadedPath: string | null;
+  /** Style profile (reference or preset) — music section length, dynamics, level. */
+  style?: StyleProfile;
 }
 
 /** Build the music cues for a timeline. Empty when music is off or no file is available. */
@@ -61,21 +65,30 @@ export function buildMusicPlan(input: MusicPlanInput): MusicCue[] {
   const { plans, duration, settings } = input;
   if (settings.musicTrack === "none" || !plans.length) return [];
   const round = (n: number) => Math.round(n * 1000) / 1000;
+  const targets = editingTargets(input.style ?? getPreset(settings.stylePreset).profile, settings);
+  const level = 10 ** (targets.music.gainDb / 20);
+  const MIN_SECTION = targets.music.minSection;
+  const envelope = (ps: ScenePlan[], a: number, b: number) => envelopeFor(ps, a, b, targets);
+  // Silences from the storyboard (before reveal lines), made relative to each cue.
+  const silences = targets.music.allowDrops ? plans.flatMap((p) => p.storyboard?.silences ?? []) : [];
+  const mutesFor = (a: number, b: number) => silences.filter((s) => s.at < b && s.at + s.duration > a).map((s) => ({ from: round(s.at - a), to: round(s.at + s.duration - a) }));
 
   // A single chosen track (the user's upload or a named bed) still follows the intensity curve.
   const fixed = settings.musicTrack === "uploaded" ? input.uploadedPath : settings.musicTrack !== "auto" ? input.resolveTrack(settings.musicTrack) : null;
   if (settings.musicTrack !== "auto") {
     if (!fixed) return [];
-    return [{ file: fixed, label: MUSIC_TRACKS.find((t) => t.key === settings.musicTrack)?.name ?? "Uploaded music", mood: null, start: 0, end: round(duration), offset: 0, fadeIn: 1.5, fadeOut: 2.5, trim: TRACK_TRIM[settings.musicTrack] ?? 1, gains: envelope(plans, 0, duration) }];
+    return [{ file: fixed, label: MUSIC_TRACKS.find((t) => t.key === settings.musicTrack)?.name ?? "Uploaded music", mood: null, start: 0, end: round(duration), offset: 0, fadeIn: 1.5, fadeOut: 4, trim: (TRACK_TRIM[settings.musicTrack] ?? 1) * level, gains: envelope(plans, 0, duration), mutes: mutesFor(0, duration) }];
   }
 
   // Story-driven: sections of scenes sharing a bed.
   type Section = { track: string; mood: MusicMood; start: number; end: number; climax: boolean; plans: ScenePlan[] };
   const sections: Section[] = [];
+  // "Minimal" music: one calm bed for the whole video (still shaped by the intensity curve).
+  const calmest = (["calm", "neutral", "reflective", "mysterious"] as MusicMood[]).find((m) => plans.some((p) => p.storyboard?.musicMood === m)) ?? "neutral";
   for (const p of plans) {
-    const mood = p.storyboard?.musicMood ?? "neutral";
+    const mood = targets.music.singleBed ? calmest : (p.storyboard?.musicMood ?? "neutral");
     const track = MOOD_TRACK[mood];
-    const climax = Boolean(p.storyboard?.intents.includes("climax"));
+    const climax = !targets.music.singleBed && Boolean(p.storyboard?.intents.includes("climax"));
     const last = sections.at(-1);
     if (last && last.track === track && !climax && !last.climax) {
       last.end = p.endTime;
@@ -130,24 +143,26 @@ export function buildMusicPlan(input: MusicPlanInput): MusicCue[] {
       end: round(end),
       offset: round((start * 0.37) % 45),
       fadeIn: i === 0 ? 1.5 : s.climax ? 0.05 : 1.5,
-      fadeOut: next?.climax ? 0.35 : 1.5,
-      trim: TRACK_TRIM[s.track] ?? 1,
+      // The last section is the outro: a long release.
+      fadeOut: next?.climax ? 0.35 : next ? 1.5 : 4,
+      trim: (TRACK_TRIM[s.track] ?? 1) * level,
       gains: envelope(s.plans, start, end),
+      mutes: mutesFor(start, end),
     });
   });
   return cues;
 }
 
 /** Gain points (relative to the cue's start) following each scene's intensity. */
-function envelope(plans: ScenePlan[], cueStart: number, cueEnd: number): { t: number; g: number }[] {
+function envelopeFor(plans: ScenePlan[], cueStart: number, cueEnd: number, targets: EditingTargets): { t: number; g: number }[] {
   const pts: { t: number; g: number }[] = [];
   const rel = (t: number) => Math.max(0, Math.round((t - cueStart) * 1000) / 1000);
   for (const [i, p] of plans.entries()) {
-    const g = sceneGain(p);
+    const g = sceneGain(p, targets);
     const next = plans[i + 1];
     if (p.storyboard?.intents.includes("buildup") && next) {
       // Build underneath: rise across the scene towards the next one.
-      pts.push({ t: rel(p.startTime), g }, { t: rel(p.endTime), g: Math.max(g, sceneGain(next)) });
+      pts.push({ t: rel(p.startTime), g }, { t: rel(p.endTime), g: Math.max(g, sceneGain(next, targets)) });
     } else {
       pts.push({ t: rel(p.startTime), g }, { t: rel(Math.max(p.startTime, p.endTime - 0.4)), g });
     }

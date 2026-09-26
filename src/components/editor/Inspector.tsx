@@ -494,11 +494,10 @@ function WhyThisVisual({ clip }: { clip: Clip }) {
 }
 
 const SCORE_PARTS: [string, string, number][] = [
-  ["entityMatch", "Named person/place/thing", 30],
-  ["eventMatch", "Event", 25],
-  ["timeMatch", "Time period", 15],
-  ["topicMatch", "Topic & place", 15],
-  ["visualMatch", "Right kind of visual", 10],
+  ["topicMatch", "About the video topic", 40],
+  ["entityMatch", "Named person/place/thing", 25],
+  ["narrationMatch", "Matches this line", 20],
+  ["timeMatch", "Time period", 10],
   ["quality", "Quality", 5],
 ];
 
@@ -528,6 +527,7 @@ function StoryboardView({ sb, clipId }: { sb: NonNullable<ScenePlan["storyboard"
     <div className="space-y-1 border-t border-line pt-3">
       <div className="font-semibold">Storyboard</div>
       <Field k="Editorial intent" v={`${sb.intent.replace(/_/g, " ")}${sb.intents.length > 1 ? ` (${sb.intents.filter((i) => i !== sb.intent).join(", ").replace(/_/g, " ")})` : ""}`} />
+      {sb.attention && <Field k="Attention map" v={sb.attention} />}
       <Field k="Viewer should feel" v={sb.feel} />
       <div className="flex items-center gap-2">
         <span className="w-28 shrink-0 text-muted">Intensity</span>
@@ -544,6 +544,7 @@ function StoryboardView({ sb, clipId }: { sb: NonNullable<ScenePlan["storyboard"
       <Field k="Transition" v={sb.transitionReason} />
       <Field k="Sound design" v={sb.sfxDirection} />
       <Field k="Memes" v={sb.memeReason} />
+      {sb.silences && sb.silences.length > 0 && <Field k="Silence" v={sb.silences.map((x) => `${x.duration.toFixed(1)}s before the reveal at ${x.at.toFixed(1)}s`).join(", ")} />}
       {sb.entities.length > 0 && <Field k="Entities" v={sb.entities.map((e) => `${e.name} (${e.kind})`).join(", ")} />}
       <details className="pt-1">
         <summary className="cursor-pointer text-muted">Beat plan ({sb.beats.length})</summary>

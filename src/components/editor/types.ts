@@ -51,6 +51,9 @@ export interface JobInfo {
     metrics?: Record<string, number>;
     method?: string;
     estimated?: string[];
+    score?: { total: number; topicRelevance: number; narrationMatch: number; visualVariety: number; pacing: number; referenceStyle: number; soundDesign: number; musicDynamics: number; transitionVariety: number; notes: string[] } | null;
+    refinement?: { pass: number; total: number; actions: string[] }[];
+    targets?: { source: string; shotSeconds: number } | null;
   } | null;
   created_at: string;
 }

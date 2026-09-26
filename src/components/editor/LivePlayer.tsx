@@ -56,6 +56,10 @@ function motionTransform(c: Clip, p: number): string | undefined {
       return `${s} rotate(${(p - 0.5) * 2}deg)`;
     case "punch_in":
       return `scale(${1 + k * 1.5})`;
+    case "document_scan":
+      return `scale(${1.45 - 0.18 * p}) translateY(${(0.5 - p) * 18}%)`;
+    case "detail_punch":
+      return p < 0.35 ? "scale(1.01)" : "scale(1.32) translate(4%, 12%)";
     default:
       return undefined;
   }

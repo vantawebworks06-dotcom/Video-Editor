@@ -193,21 +193,42 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
   const creds = await resolveCredentials(project.user_id);
   const { claude, usage } = makeClaude(creds, settings, db, { userId: project.user_id, projectId: project.id });
 
-  if (job.kind === "analyze_reference") {
-    if (!project.reference_video_path) throw new Error("Upload a reference video first.");
-    await progress("Analysing reference video", 0.1);
-    const file = await downloadObject(project.reference_video_path);
-    const analysis = await analyzeReferenceVideo(file, { workDir: path.join(ROOT, "reference", job.id), claude: claude ?? undefined });
+  /** Measure the reference video and store its style profile (optionally applying it). */
+  const analyseReference = async (apply: boolean) => {
+    const file = await downloadObject(project.reference_video_path!);
+    const analysis = await analyzeReferenceVideo(file, { workDir: path.join(ROOT, "reference", job.id), claude: claude ?? undefined, source: project.reference_video_path! });
     signal.throwIfAborted();
     const { data: profile, error } = await db
       .from("style_profiles")
-      .insert({ user_id: project.user_id, name: `Reference: ${project.name}`.slice(0, 120), source: "reference", profile: analysis.profile, metrics: { ...analysis.metrics, measured: analysis.measured, estimated: analysis.estimated, method: analysis.method, notes: analysis.notes } })
+      .insert({ user_id: project.user_id, name: `Reference: ${project.name}`.slice(0, 120), source: "reference", profile: analysis.profile, metrics: { ...analysis.metrics, referencePath: project.reference_video_path, measured: analysis.measured, estimated: analysis.estimated, method: analysis.method, notes: analysis.notes } })
       .select("id")
       .single();
     if (error) throw new Error(error.message);
-    if (job.payload?.apply !== false) await db.from("projects").update({ style_profile_id: profile.id }).eq("id", project.id);
+    if (apply) {
+      await db.from("projects").update({ style_profile_id: profile.id }).eq("id", project.id);
+      project.style_profile_id = profile.id;
+    }
     await rm(path.join(ROOT, "reference", job.id), { recursive: true, force: true });
-    return { styleProfileId: profile.id, ...analysis };
+    return { styleProfileId: profile.id as string, analysis };
+  };
+
+  if (job.kind === "analyze_reference") {
+    if (!project.reference_video_path) throw new Error("Upload a reference video first.");
+    await progress("Analysing reference video", 0.1);
+    const { styleProfileId, analysis } = await analyseReference(job.payload?.apply !== false);
+    return { styleProfileId, ...analysis };
+  }
+
+  // A reference video is a core input: if it hasn't been analysed (or was replaced since), analyse
+  // it now so its editing language drives this edit.
+  if (project.reference_video_path) {
+    const { data: current } = project.style_profile_id ? await db.from("style_profiles").select("profile").eq("id", project.style_profile_id).maybeSingle() : { data: null };
+    const src = (current?.profile as { reference?: { source?: string } } | null)?.reference?.source;
+    if (src !== project.reference_video_path) {
+      await progress("Analysing reference video…", 0.01);
+      await analyseReference(true);
+      log(`[${job.id.slice(0, 8)}] reference analysed → style profile ${project.style_profile_id}`);
+    }
   }
 
   await db.from("projects").update({ status: "processing", last_error: null }).eq("id", project.id);
@@ -258,6 +279,12 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
     scenes: result.plans.length,
     clips: result.selections.length,
     review: reviewSummary,
+    // Editorial score (final pass) + how it got there, the bible and the targets that drove the edit.
+    score: result.scoreHistory?.at(-1)?.score ? (({ measurements, ...rest }) => ({ ...rest, measurements }))(result.scoreHistory.at(-1)!.score) : null,
+    refinement: result.scoreHistory?.map((h) => ({ pass: h.pass, total: h.score.total, actions: h.actions.map((a) => a.action) })),
+    bible: result.bible,
+    targets: result.targets,
+    transitions: result.transitions,
     warnings: result.warnings.slice(0, 50),
     searchErrors: errorSummary,
     ai: usage.totals,
@@ -316,7 +343,8 @@ async function runRenderJob(job: JobRow, signal: AbortSignal) {
 
   const format = job.format ?? "landscape";
   const resolveTrack = (key: string) => (existsSync(library.music(key)) ? library.music(key) : null);
-  const timeline = buildTimeline({ plans: edit.plans, selections, transcript, settings, format, voicePath: audio.path, musicPath: music, resolveTrack });
+  const style = await resolveStyle(db, project.style_profile_id, settings);
+  const timeline = buildTimeline({ plans: edit.plans, selections, transcript, settings, format, voicePath: audio.path, musicPath: music, resolveTrack, style });
   const outPath = path.join(ROOT, "renders", `${job.id}.mp4`);
   const result = await renderTimeline(timeline, {
     workDir: path.join(ROOT, "render", job.id),
