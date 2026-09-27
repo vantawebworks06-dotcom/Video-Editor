@@ -99,22 +99,33 @@ function textEvents(c: TextClip, W: number, H: number): string[] {
   }
 }
 
-/** Caption chunks: up to ~6 words / 2.6s, broken at sentence ends. */
+/** A gap in the narration longer than this ends a caption (e.g. a pause for source footage). */
+const CAPTION_BREAK_GAP = 1;
+
+/**
+ * Caption chunks: up to ~6 words / 2.6s, broken at sentence ends and at pauses — a caption never
+ * spans a gap in the narration (such as an interview clip playing between two words).
+ */
 export function chunkWords(words: Word[]): { start: number; end: number; idx: number[] }[] {
   const chunks: { start: number; end: number; idx: number[] }[] = [];
   let cur: number[] = [];
+  const flush = () => {
+    if (!cur.length) return;
+    chunks.push({ start: words[cur[0]!]!.start, end: words[cur.at(-1)!]!.end, idx: cur });
+    cur = [];
+  };
   words.forEach((w, i) => {
+    // A pause before this word closes the current caption first.
+    if (cur.length && w.start - words[cur.at(-1)!]!.end > CAPTION_BREAK_GAP) flush();
     cur.push(i);
     const first = words[cur[0]!]!;
     const tooLong = w.end - first.start > 2.6 || cur.length >= 6;
-    if (/[.!?,;:]$/.test(w.word) || tooLong || i === words.length - 1) {
-      chunks.push({ start: first.start, end: w.end, idx: cur });
-      cur = [];
-    }
+    if (/[.!?,;:]$/.test(w.word) || tooLong || i === words.length - 1) flush();
   });
-  // Hold each chunk until the next begins (avoids flicker), max +0.6s.
+  // Hold each chunk until the next begins (avoids flicker), max +0.6 s — but only briefly into a pause.
   for (let i = 0; i < chunks.length - 1; i++) {
-    chunks[i]!.end = Math.min(chunks[i + 1]!.start, chunks[i]!.end + 0.6);
+    const gap = chunks[i + 1]!.start - chunks[i]!.end;
+    chunks[i]!.end = Math.min(chunks[i + 1]!.start, chunks[i]!.end + (gap > CAPTION_BREAK_GAP ? 0.2 : 0.6));
   }
   return chunks;
 }

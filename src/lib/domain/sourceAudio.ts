@@ -55,17 +55,21 @@ export interface NarrationInsert {
 /** Map narration time → output time. `side` decides a time exactly on an insertion point. */
 export function toOutputTime(t: number, inserts: Pick<NarrationInsert, "at" | "duration">[], side: "before" | "after" = "after"): number {
   let out = t;
-  for (const ins of inserts) if (ins.at < t || (side === "after" && ins.at === t)) out += ins.duration;
+  // Times within a microsecond of a pause point count as "at" it (word times are unrounded floats:
+  // a word ending at 8.0000000001 still ends before a pause at 8.0).
+  const EPS = 1e-6;
+  for (const ins of inserts) if (ins.at < t - EPS || (side === "after" && Math.abs(ins.at - t) <= EPS)) out += ins.duration;
   return out;
 }
 
 /** Narration pauses created by pause/overlap source clips, in narration-time order. */
-export function narrationInserts(sources: { start: number; duration: number; audio: SourceAudio }[]): NarrationInsert[] {
+export function narrationInserts(sources: { start: number; duration: number; audio: SourceAudio }[], snap: (t: number) => number = (t) => t): NarrationInsert[] {
   const raw = sources
     .filter((s) => s.audio.mode === "pause" || s.audio.mode === "overlap")
     .map((s) => {
       const o = s.audio.mode === "overlap" ? Math.min(s.audio.overlap, Math.max(0, s.duration - 0.2)) : 0;
-      return { at: round(s.start + o), duration: round(Math.max(0.2, s.duration - o)) };
+      // The narration stops at a word boundary (snap), never mid-word.
+      return { at: round(snap(s.start + o)), duration: round(Math.max(0.2, s.duration - o)) };
     })
     .sort((a, b) => a.at - b.at);
   let shift = 0;

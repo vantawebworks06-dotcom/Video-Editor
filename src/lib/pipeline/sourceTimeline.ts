@@ -93,9 +93,14 @@ function mapToOutput(base: VisualClip[], inserts: NarrationInsert[]): VisualClip
   return out;
 }
 
-export function applySources(base: VisualClip[], sources: SourcePlacement[], narrationDuration: number): SourceResult {
-  const sorted = [...sources].sort((p, q) => p.clip.start - q.clip.start);
-  const inserts = narrationInserts(sorted.map((s) => ({ start: s.clip.start, duration: s.clip.duration, audio: s.audio })));
+/**
+ * snap: moves a narration pause point to the nearest word boundary (so the narration never stops
+ * mid-word and captions never straddle a pause). A pause-mode clip starts where the pause does.
+ */
+export function applySources(base: VisualClip[], sources: SourcePlacement[], narrationDuration: number, opts: { snap?: (t: number) => number } = {}): SourceResult {
+  const snap = opts.snap ?? ((t: number) => t);
+  const sorted = [...sources].map((s) => (s.audio.mode === "pause" ? { ...s, clip: { ...s.clip, start: round(snap(s.clip.start)) } } : s)).sort((p, q) => p.clip.start - q.clip.start);
+  const inserts = narrationInserts(sorted.map((s) => ({ start: s.clip.start, duration: s.clip.duration, audio: s.audio })), snap);
   const map = (t: number, side: "before" | "after" = "after") => toOutputTime(t, inserts, side);
   let visuals = mapToOutput(base, inserts);
   const voiceDucks: SourceResult["voiceDucks"] = [];

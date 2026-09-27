@@ -71,7 +71,8 @@ export interface BuildTimelineInput {
  * renderer only ever receives a structurally valid timeline built from internal data.
  */
 export function buildTimeline(input: BuildTimelineInput): Timeline {
-  const { width, height, fps } = FORMAT_DIMENSIONS[input.format];
+  const { width, height } = FORMAT_DIMENSIONS[input.format];
+  const fps = input.format === "draft" ? FORMAT_DIMENSIONS.draft.fps : input.settings.export.fps;
   const duration = round(Math.max(input.transcript.duration, input.plans.at(-1)?.endTime ?? 0) + 0.6);
 
   // Visuals: contiguous from 0 to duration (gaps closed by extending the previous clip).
@@ -127,6 +128,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
       },
     })),
     duration,
+    { snap: (t) => snapToWordBoundary(t, input.transcript.words) },
   );
   visuals.splice(0, visuals.length, ...src.visuals);
   const outT = src.map;
@@ -240,6 +242,14 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** The nearest word boundary to t when t falls inside a word (within 0.35 s), else t. */
+export function snapToWordBoundary(t: number, words: { start: number; end: number }[]): number {
+  const w = words.find((x) => t > x.start + 1e-6 && t < x.end - 1e-6);
+  if (!w) return t;
+  const to = t - w.start < w.end - t ? w.start : w.end;
+  return Math.abs(to - t) <= 0.35 ? to : t;
+}
 
 /** The clip's own look, else the project look; neutral looks are dropped (render and cache unchanged). */
 function clipLook(own: Look | null | undefined, project: Look): Look | undefined {

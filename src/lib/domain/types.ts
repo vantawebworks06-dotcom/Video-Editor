@@ -3,6 +3,7 @@ import { DEFAULT_SOURCE_AUDIO, SourceAudio } from "./sourceAudio";
 import { DEFAULT_VOICE, VoiceProcessing } from "./voice";
 import { DEFAULT_LOOK, Look } from "./look";
 import { DEFAULT_GRAPHICS_STYLE, Graphic, GraphicClip, GraphicsStyle } from "./graphics";
+import { DEFAULT_EXPORT, ExportSettings } from "./exportSettings";
 
 // ---------------------------------------------------------------------------
 // Rights
@@ -550,7 +551,7 @@ export type Timeline = z.infer<typeof Timeline>;
 export const MemeFrequency = z.enum(["OFF", "LOW", "MEDIUM", "HIGH"]);
 export type MemeFrequency = z.infer<typeof MemeFrequency>;
 
-export const OutputFormat = z.enum(["landscape", "vertical", "draft"]);
+export const OutputFormat = z.enum(["landscape", "vertical", "draft", "hd720"]);
 export type OutputFormat = z.infer<typeof OutputFormat>;
 
 export const ProjectSettings = z.object({
@@ -586,6 +587,8 @@ export const ProjectSettings = z.object({
   look: Look.default(DEFAULT_LOOK),
   /** Theme, accent colour and size of designed graphics. */
   graphics: GraphicsStyle.default(DEFAULT_GRAPHICS_STYLE),
+  /** Final export: frame rate, quality, loudness target, burned-in captions. */
+  export: ExportSettings.default(DEFAULT_EXPORT),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
@@ -620,6 +623,7 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   voice: DEFAULT_VOICE,
   look: DEFAULT_LOOK,
   graphics: DEFAULT_GRAPHICS_STYLE,
+  export: DEFAULT_EXPORT,
 };
 
 /** Measured editing characteristics of a reference video (all values measured, none invented). */
@@ -694,4 +698,5 @@ export const FORMAT_DIMENSIONS: Record<OutputFormat, { width: number; height: nu
   landscape: { width: 1920, height: 1080, fps: 30 },
   vertical: { width: 1080, height: 1920, fps: 30 },
   draft: { width: 960, height: 540, fps: 30 },
+  hd720: { width: 1280, height: 720, fps: 30 },
 };

@@ -3,6 +3,7 @@ import path from "node:path";
 import { type AssetRef, type RenderStatus, Timeline } from "@/lib/domain/types";
 import { buildAss } from "./ass";
 import { buildAudioGraph } from "./audio";
+import { normalizeLoudness, type QcReport, qcReport } from "./qc";
 import { processVoice } from "@/lib/audio/voiceMeasure";
 import { isAllowedMediaUrl, NETWORK_INPUT_ARGS, probe, runFfmpeg } from "./ffmpeg";
 import { stableHash } from "@/lib/media/cache";
@@ -19,6 +20,10 @@ export interface RenderOptions {
   concurrency?: number;
   resolveLocal?: PrepareContext["resolveLocal"];
   onStage?: (status: RenderStatus, progress: number, message: string) => void | Promise<void>;
+  /** Final export settings: encode quality, delivery loudness (LUFS; null = leave the mix as is), burned-in captions. */
+  quality?: "standard" | "high";
+  loudnessTarget?: number | null;
+  burnCaptions?: boolean;
   log?: (msg: string) => void;
 }
 
@@ -30,6 +35,9 @@ export interface RenderResult {
   segmentsCached: number;
   /** Clip id → the asset actually used (after automatic fallbacks). */
   usedAssets: Record<string, string | null>;
+  /** Measured file (format, loudness, black/silent stretches). */
+  qc: QcReport;
+  loudness: { gainDb: number; limited: boolean; skipped: boolean } | null;
 }
 
 async function pool<T>(items: T[], limit: number, fn: (item: T, index: number) => Promise<void>) {
@@ -172,7 +180,9 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
   const listFile = path.join(opts.workDir, "segments.txt");
   await writeFile(listFile, segments.map((s) => `file '${s.replace(/\\/g, "/").replace(/'/g, "'\\''")}'`).join("\n"));
   const assFile = path.join(opts.workDir, "overlay.ass");
-  await writeFile(assFile, buildAss(timeline), "utf8");
+  // Captions only as a delivered file (not burned in) when the export asks for that.
+  const burned = opts.burnCaptions === false ? { ...timeline, captions: { ...timeline.captions, mode: "OFF" as const } } : timeline;
+  await writeFile(assFile, buildAss(burned), "utf8");
   // Relative paths (cwd = workDir) keep Windows drive colons out of filter arguments.
   const fontsRel = path.relative(opts.workDir, library.fontsDir).replace(/\\/g, "/");
 
@@ -189,7 +199,7 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
     }
   }
   const audio = buildAudioGraph(voiceTimeline, 1, sourceAudio, { voicePreprocessed: voiceTimeline !== timeline });
-  const hasText = timeline.texts.length > 0 || timeline.captions.mode !== "OFF" || Boolean(timeline.graphics?.length);
+  const hasText = burned.texts.length > 0 || burned.captions.mode !== "OFF" || Boolean(burned.graphics?.length);
   const videoFilter = hasText ? `[0:v]ass=overlay.ass:fontsdir='${fontsRel}',format=yuv420p[vout]` : `[0:v]format=yuv420p[vout]`;
   const filters = [videoFilter, ...audio.filters].join(";");
   const tmpOut = `${opts.outPath}.tmp.mp4`;
@@ -202,12 +212,12 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
       ...(audio.label ? ["-map", `[${audio.label}]`] : []),
       "-t", timeline.duration.toFixed(3),
       "-c:v", "libx264",
-      "-preset", opts.draft ? "ultrafast" : "medium",
-      "-crf", opts.draft ? "26" : "20",
-      // Cap the bitrate at YouTube's recommended level (8 Mbps for 1080p30) so files stay a
+      "-preset", opts.draft ? "ultrafast" : opts.quality === "high" ? "slow" : "medium",
+      "-crf", opts.draft ? "26" : opts.quality === "high" ? "17" : "20",
+      // Cap the bitrate (standard: YouTube's recommended 8 Mbps for 1080p30) so files stay a
       // sensible size; grain and constant motion otherwise balloon a CRF-only encode.
-      "-maxrate", opts.draft ? "2500k" : "8M",
-      "-bufsize", opts.draft ? "5M" : "16M",
+      "-maxrate", opts.draft ? "2500k" : opts.quality === "high" ? "16M" : "8M",
+      "-bufsize", opts.draft ? "5M" : opts.quality === "high" ? "32M" : "16M",
       "-pix_fmt", "yuv420p",
       "-r", String(timeline.fps),
       ...(audio.label ? ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"] : []),
@@ -227,6 +237,16 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
   if (!info.hasVideo || Math.abs((info.duration ?? 0) - timeline.duration) > 1.5) {
     throw new Error(`Output verification failed (duration ${info.duration} vs ${timeline.duration})`);
   }
+  // Delivery loudness, then measure the finished file.
+  let loudness: RenderResult["loudness"] = null;
+  if (opts.loudnessTarget != null && info.hasAudio) {
+    await stage("FINALIZING", 0.97, `Setting loudness to ${opts.loudnessTarget} LUFS`);
+    loudness = await normalizeLoudness(opts.outPath, opts.loudnessTarget);
+    log(`loudness: ${loudness.skipped ? "already on target" : `${loudness.gainDb > 0 ? "+" : ""}${loudness.gainDb} dB${loudness.limited ? " (peaks limited)" : ""}`}`);
+  }
+  await stage("FINALIZING", 0.99, "Checking the finished file");
+  const qc = await qcReport(opts.outPath, opts.loudnessTarget ?? null);
+  if (qc.black.some((b) => b.end - b.start >= 2)) warnings.push(`Black picture for ${qc.black.filter((b) => b.end - b.start >= 2).map((b) => `${b.start.toFixed(1)}–${b.end.toFixed(1)} s`).join(", ")}.`);
   await stage("COMPLETE", 1, "Render complete");
-  return { outPath: opts.outPath, duration: info.duration ?? timeline.duration, warnings, segmentsRendered: rendered, segmentsCached: cached, usedAssets };
+  return { outPath: opts.outPath, duration: info.duration ?? timeline.duration, warnings, segmentsRendered: rendered, segmentsCached: cached, usedAssets, qc, loudness };
 }

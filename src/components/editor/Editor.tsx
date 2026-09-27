@@ -22,6 +22,9 @@ import { useAnalysis } from "@/components/workstation/useAnalysis";
 import { MediaLibrary } from "@/components/workstation/MediaLibrary";
 import { SourceRights } from "@/components/workstation/SourceRights";
 import { useMedia } from "@/components/workstation/useMedia";
+import { AssistantPanel } from "@/components/workstation/AssistantPanel";
+import { ExportPanel } from "@/components/workstation/ExportPanel";
+import type { AssistantAction } from "@/lib/assistant/actions";
 import type { SceneMediaStatus } from "@/components/workstation/SceneBoard";
 import { type ProviderInfoView, ResearchPanel, type ResearchRequestView } from "@/components/workstation/ResearchPanel";
 
@@ -96,6 +99,18 @@ export function Editor({ projectId }: { projectId: string }) {
   const [replacing, setReplacing] = useState<{ clip: Clip; tab: "ai" | "search" } | null>(null);
   const [centerTab, setCenterTab] = useState<"preview" | "review">("preview");
   const [showRights, setShowRights] = useState(false);
+  const [assistantOpen, setAssistantOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setAssistantOpen((o) => !o);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   // null = automatic: the live edit until a render exists, then the render.
   const [watchMode, setWatchMode] = useState<"live" | "render" | null>(null);
   const [format, setFormat] = useState<"landscape" | "vertical" | "draft">("draft");
@@ -338,6 +353,89 @@ export function Editor({ projectId }: { projectId: string }) {
   const music = p.settings.musicTrack === "auto" ? "Story-driven" : (MUSIC_TRACKS.find((t) => t.key === p.settings.musicTrack)?.name ?? (p.settings.musicTrack === "uploaded" ? "Uploaded music" : "No music"));
   const hasEdit = Boolean(edit?.clips.length);
   const canLive = Boolean(hasEdit && status.narrationUrl);
+
+  /** Runs one assistant action through the same routes as the panels; returns a short result. */
+  const runAssistantAction = async (a: AssistantAction): Promise<string> => {
+    const patchSettings = (settings: Record<string, unknown>) => api(`/api/projects/${projectId}`, { method: "PATCH", json: { settings } });
+    let result = "";
+    switch (a.type) {
+      case "look":
+        if (a.scope === "project") await api(`/api/projects/${projectId}/look`, { method: "POST", json: { look: a.look } });
+        else for (const key of a.clipKeys) await api(`/api/projects/${projectId}/clips/${key}`, { method: "PATCH", json: { action: "update", look: a.look } });
+        break;
+      case "graphicsStyle":
+        await patchSettings({ graphics: { ...p.settings.graphics, ...a.style } });
+        break;
+      case "addGraphic":
+        await api(`/api/projects/${projectId}/scenes/${a.sceneId}`, { method: "POST", json: { action: "addGraphic", graphic: a.graphic } });
+        selectScene(a.sceneId);
+        break;
+      case "suggestGraphics": {
+        const r = await api<{ added: number }>(`/api/projects/${projectId}/graphics/suggest`, { method: "POST", json: { replace: true } });
+        result = r.added ? `${r.added} graphics added` : "no new graphic moments found";
+        break;
+      }
+      case "voice":
+        await patchSettings({ voice: a.voice });
+        result = "used in the next render (Audio tab → Measure & preview to listen)";
+        break;
+      case "mix":
+        await patchSettings({ mix: a.mix });
+        break;
+      case "music":
+        await patchSettings({ musicTrack: a.track });
+        break;
+      case "captions":
+        await patchSettings({ captions: a.mode });
+        break;
+      case "seek":
+        seek(a.t);
+        return "";
+      case "selectClip": {
+        const c = edit?.clips.find((x) => x.clipId === a.clipKey);
+        if (c) selectClip(c);
+        seek(a.t);
+        return "";
+      }
+      case "replaceClip": {
+        const c = edit?.clips.find((x) => x.clipId === a.clipKey);
+        if (!c) throw new Error("That clip is no longer on the timeline.");
+        selectClip(c);
+        setReplacing({ clip: c, tab: "ai" });
+        return "";
+      }
+      case "research": {
+        // Research works per sentence: the one that best matches the query, else the one at the playhead.
+        const sentences = analysis.analysis?.sentences ?? [];
+        const words = a.query.toLowerCase().split(/W+/).filter((w) => w.length > 3);
+        const t = playhead.get();
+        const best = [...sentences].sort((x, y) => words.filter((w) => y.text.toLowerCase().includes(w)).length - words.filter((w) => x.text.toLowerCase().includes(w)).length)[0];
+        const target = best && words.some((w) => best.text.toLowerCase().includes(w)) ? best : sentences.find((x) => t >= x.start && t < x.end) ?? sentences[0];
+        if (!target) throw new Error("Analyse the script first (SCRIPT section).");
+        setSelectedSentence(target.idx);
+        setResearchRequest({ sentence: target.idx, query: a.query, category: a.category, nonce: Date.now() });
+        setSection("research");
+        return "";
+      }
+      case "openRights":
+        setShowRights(true);
+        return "";
+      case "history": {
+        const r = await api<{ label: string }>(`/api/projects/${projectId}/history`, { method: "POST", json: { action: a.direction } });
+        result = `${a.direction === "undo" ? "undid" : "redid"} “${r.label}”`;
+        break;
+      }
+      case "render":
+        await api(`/api/projects/${projectId}/jobs`, { method: "POST", json: { type: "render", format: a.format } });
+        result = "render queued (the worker must be running)";
+        break;
+      case "check":
+      case "help":
+        return "";
+    }
+    await refresh();
+    return result;
+  };
   const mode = watchMode ?? (status.latestExport?.url ? "render" : "live");
 
   const sentence = analysis.analysis?.sentences.find((s) => s.idx === selectedSentence) ?? null;
@@ -499,14 +597,15 @@ export function Editor({ projectId }: { projectId: string }) {
         <Button disabled={busy || !hasEdit || ACTIVE.includes(rj?.status ?? "")} onClick={() => void enqueue({ type: "render", format })}>
           Render
         </Button>
+        <Button variant={assistantOpen ? "primary" : "ghost"} onClick={() => setAssistantOpen((o) => !o)} title="Editing assistant (Ctrl+K)">
+          Assistant
+        </Button>
         <Button variant="ghost" disabled={!hasEdit} onClick={() => setShowRights(true)}>
           Asset Rights
         </Button>
-        {status.latestExport?.url && (
-          <a href={status.latestExport.downloadUrl ?? status.latestExport.url} download className="text-sm text-accent hover:underline">
-            Export MP4 ↓
-          </a>
-        )}
+        <Button variant="primary" disabled={!hasEdit} onClick={() => setExportOpen(true)} title="Final export: presets, loudness, captions files, chapters, rights report">
+          Export
+        </Button>
       </header>
 
       <nav className="flex items-center gap-0.5 border-b border-line bg-panel px-2" aria-label="Workstation sections">
@@ -658,6 +757,21 @@ export function Editor({ projectId }: { projectId: string }) {
         )}
       </div>
 
+      {exportOpen && (
+        <ExportPanel projectId={projectId} settings={p.settings} edit={edit} analysis={analysis.analysis} renderJob={rj} onClose={() => setExportOpen(false)} onStarted={() => void loadStatus()} />
+      )}
+      <AssistantPanel
+        projectId={projectId}
+        open={assistantOpen}
+        onClose={() => setAssistantOpen(false)}
+        edit={edit}
+        settings={p.settings}
+        analysis={analysis.analysis}
+        playhead={playhead}
+        selectedClip={selectedClip}
+        selectedScene={selectedScene}
+        run={runAssistantAction}
+      />
       {replacing && (
         <ReplaceDialog
           projectId={projectId}

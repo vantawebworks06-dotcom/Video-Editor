@@ -30,6 +30,7 @@ import { resolveCredentials } from "@/lib/settings/apiKeys";
 import { BUCKET, createAdminClient } from "@/lib/supabase/admin";
 import { transcribeWithWhisper } from "@/lib/transcription/whisper";
 import { captureTask, importMedia, processAudioTask, type TaskDeps } from "./tasks";
+import { buildManifest } from "@/lib/export/deliverables";
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const ROOT = path.join(process.cwd(), ".cache");
@@ -91,6 +92,7 @@ interface ProjectRow {
   reference_video_path: string | null;
   music_path: string | null;
   timeline_version: number;
+  analysis?: unknown;
 }
 
 async function loadProject(id: string): Promise<ProjectRow> {
@@ -359,6 +361,10 @@ async function runRenderJob(job: JobRow, signal: AbortSignal) {
     workDir: path.join(ROOT, "render", job.id),
     outPath,
     draft: format === "draft",
+    // Export settings: drafts are quick checks (no loudness pass); finals meet the delivery target.
+    quality: settings.export.quality,
+    loudnessTarget: format === "draft" ? null : settings.export.loudness,
+    burnCaptions: settings.export.burnCaptions,
     resolveLocal: async (ref: AssetRef) => {
       // "uploaded:narration:<path>" = the narration video itself; "uploaded:<path>" = the user's media;
       // "capture:<path>" = a screenshot captured into project storage.
@@ -374,6 +380,34 @@ async function runRenderJob(job: JobRow, signal: AbortSignal) {
   });
   warnings.push(...result.warnings);
   signal.throwIfAborted();
+
+  // Deliverables: one manifest (captions, chapters, credits, rights, measurements) and a thumbnail,
+  // stored next to the video — also when the video itself is too large for Storage.
+  const sceneTitles: Record<string, string> = {};
+  const analysis = project.analysis as { scenes?: { key: string; title: string }[] } | null | undefined;
+  for (const sc of analysis?.scenes ?? []) if (sc.key && sc.title) sceneTitles[sc.key] = sc.title;
+  const manifest = buildManifest({
+    jobId: job.id,
+    projectName: project.name,
+    format,
+    timeline,
+    assets: new Map(selections.map((x) => [x.clipId, { ...x.asset, userApproved: Boolean((x.asset as { userApproved?: boolean }).userApproved) }])),
+    settings: settings.export,
+    sceneTitles,
+    qc: result.qc,
+    loudness: result.loudness,
+    warnings: [...warnings],
+  });
+  try {
+    const manifestFile = `${outPath}.manifest.json`;
+    await writeFile(manifestFile, JSON.stringify(manifest));
+    await uploadFile(manifestFile, `${project.id}/renders/${job.id}.manifest.json`, "text/plain");
+    const thumb = `${outPath}.jpg`;
+    await runFfmpeg(["-ss", manifest.thumbnailAt.toFixed(2), "-i", outPath, "-frames:v", "1", "-vf", "scale='min(1280,iw)':-2", "-q:v", "3", thumb]);
+    await uploadFile(thumb, `${project.id}/renders/${job.id}.jpg`, "image/jpeg");
+  } catch (err) {
+    warnings.push(`Export files (captions, chapters, report) could not be saved: ${(err as Error).message}`);
+  }
 
   const size = (await stat(outPath)).size;
   const objectPath = `${project.id}/renders/${job.id}.mp4`;

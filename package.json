@@ -31,7 +31,9 @@
     "test:voice": "tsx --env-file-if-exists=.env.local scripts/test-voice.ts",
     "test:looks": "tsx --env-file-if-exists=.env.local scripts/test-looks.ts",
     "test:graphics": "tsx --env-file-if-exists=.env.local scripts/test-graphics.ts",
-    "test:graphics-preview": "tsx --env-file-if-exists=.env.local scripts/test-graphics-preview.tsx"
+    "test:graphics-preview": "tsx --env-file-if-exists=.env.local scripts/test-graphics-preview.tsx",
+    "test:assistant": "tsx scripts/test-assistant.ts",
+    "test:export": "tsx --env-file-if-exists=.env.local scripts/test-export.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
