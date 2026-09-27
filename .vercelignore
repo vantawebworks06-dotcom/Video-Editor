@@ -5,7 +5,9 @@
 .vercel
 .cache
 output
-assets/library
+# The render library is large (music, sfx, textures) — only its fonts are needed on Vercel.
+assets/library/*
+!assets/library/fonts
 supabase/.temp
 supabase/.branches
 node_modules
