@@ -6,6 +6,7 @@ import { makeClaude, parseSettings } from "@/lib/data/project";
 import { loadEdit, selectionToRow, upsertAssets } from "@/lib/data/store";
 import { committed, discardSnapshot, snapshot } from "@/lib/data/history";
 import { SfxKind, TextAnimation, TextPosition, TextStyle, type ScenePlan } from "@/lib/domain/types";
+import { Graphic } from "@/lib/domain/graphics";
 import { insertMeme } from "@/lib/pipeline/generate";
 import { memeFor } from "@/lib/pipeline/heuristicDirector";
 import { resolveCredentials } from "@/lib/settings/apiKeys";
@@ -31,6 +32,9 @@ const Body = z.discriminatedUnion("action", [
     index: z.number().int().min(0).max(100),
   }),
   z.object({ action: z.literal("addMeme") }),
+  z.object({ action: z.literal("addGraphic"), graphic: Graphic.omit({ id: true }) }),
+  z.object({ action: z.literal("updateGraphic"), id: z.string().min(1).max(40), graphic: Graphic.omit({ id: true }).partial() }),
+  z.object({ action: z.literal("removeGraphic"), id: z.string().min(1).max(40) }),
 ]);
 
 export const POST = route(async (req: NextRequest, ctx: RouteContext<"/api/projects/[id]/scenes/[sceneKey]">) => {
@@ -50,6 +54,9 @@ export const POST = route(async (req: NextRequest, ctx: RouteContext<"/api/proje
       addSfx: "Add sound effect",
       removeSfx: "Remove sound effect",
       addMeme: "Add reaction",
+      addGraphic: "Add graphic",
+      updateGraphic: "Edit graphic",
+      removeGraphic: "Remove graphic",
     }[body.action] + ` (${sceneKey})`,
   );
   try {
@@ -73,6 +80,22 @@ export const POST = route(async (req: NextRequest, ctx: RouteContext<"/api/proje
       });
     } else if (body.action === "removeSfx") {
       plan.sfx.splice(body.index, 1);
+    } else if (body.action === "addGraphic") {
+      if (body.graphic.at >= sceneDur) throw new HttpError(400, "The graphic must start inside the scene.");
+      const graphic = Graphic.parse({ ...body.graphic, id: `g${crypto.randomUUID().replace(/-/g, "").slice(0, 8)}` });
+      plan.graphics = [...(plan.graphics ?? []), graphic].sort((a, b) => a.at - b.at);
+      result = { graphicId: graphic.id };
+    } else if (body.action === "updateGraphic" || body.action === "removeGraphic") {
+      const list = plan.graphics ?? [];
+      const i = list.findIndex((g) => g.id === body.id);
+      if (i < 0) throw new HttpError(404, "Graphic not found");
+      if (body.action === "removeGraphic") list.splice(i, 1);
+      else {
+        const next = Graphic.parse({ ...list[i], ...body.graphic, id: body.id });
+        if (next.at >= sceneDur) throw new HttpError(400, "The graphic must start inside the scene.");
+        list[i] = next;
+      }
+      plan.graphics = list.sort((a, b) => a.at - b.at);
     } else {
       // Add Meme: explicit user request, so the frequency threshold is bypassed — but the
       // moment and reaction queries still come from Claude (or keyword rules without a key).

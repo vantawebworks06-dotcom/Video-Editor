@@ -19,6 +19,7 @@ import { buildMusicPlan } from "./music";
 import { NARRATION_ASSET_PREFIX } from "./originalFootage";
 import { applySources } from "./sourceTimeline";
 import { isNeutral, type Look, lookValues } from "@/lib/domain/look";
+import { type GraphicClip, graphicClipsFor } from "@/lib/domain/graphics";
 import { DEFAULT_SOURCE_AUDIO } from "@/lib/domain/sourceAudio";
 
 export const TEXT_FONT = "Anton";
@@ -169,6 +170,9 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
   texts.push(...cardTexts);
   texts.sort((a, b) => a.start - b.start);
 
+  // Designed graphics: scene-relative narration time → output time; theme/accent resolved.
+  const graphics: GraphicClip[] = graphicClipsFor(input.plans, input.settings.graphics, { vertical: width < height, toTime: outT }).filter((g) => g.start < outDuration);
+
   const sfx: SfxClip[] = [];
   for (const p of input.plans) {
     for (const [i, c] of p.sfx.entries()) {
@@ -209,6 +213,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     paperStyle: input.settings.paperStyle,
     visuals,
     texts,
+    graphics: graphics.length ? graphics : undefined,
     captions: {
       mode: input.settings.captions,
       words: src.inserts.length ? input.transcript.words.map((w) => ({ ...w, start: round(outT(w.start, "after")), end: round(outT(w.end, "before")) })) : input.transcript.words,

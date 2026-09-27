@@ -4,6 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } fro
 import { fmtTime } from "@/components/ui";
 import type { Word } from "@/lib/domain/types";
 import { isNeutral, type Look, lookCss, lookValues } from "@/lib/domain/look";
+import { graphicClipsFor, type GraphicsStyle } from "@/lib/domain/graphics";
+import { GraphicOverlay } from "@/components/workstation/GraphicOverlay";
 import { cardContent } from "./Inspector";
 import type { PlayheadStore } from "./playhead";
 import type { Clip, EditData } from "./types";
@@ -187,7 +189,10 @@ export function LivePlayer({
   playhead,
   mediaRef,
   projectLook,
+  graphicsStyle,
 }: {
+  /** Theme/accent/size of designed graphics (drawn over the preview like the render does). */
+  graphicsStyle?: GraphicsStyle;
   /** The project image look (clips without their own look follow it). */
   projectLook?: Look;
   data: EditData;
@@ -205,6 +210,7 @@ export function LivePlayer({
   const clips = useMemo(() => [...data.clips].sort((a, b) => a.start - b.start), [data.clips]);
   const sources = useMemo(() => new Map(clips.map((c) => [c.rowId, sourceFor(c, narrationUrl)])), [clips, narrationUrl]);
   const chunks = useMemo(() => (captions ? captionChunks(data.words) : []), [captions, data.words]);
+  const graphics = useMemo(() => (graphicsStyle ? graphicClipsFor(data.plans, graphicsStyle) : []), [data.plans, graphicsStyle]);
 
   const lastPush = useRef(0);
   const sync = useCallback(() => {
@@ -270,6 +276,7 @@ export function LivePlayer({
             SOURCE · {clips[idx]!.sourceAudio?.mode === "visual_only" ? "picture only" : "its audio plays in the render"}
           </div>
         )}
+        {graphics.length > 0 && <GraphicOverlay graphics={graphics} t={t} captionsBottom={captions} />}
         {caption && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[8%] flex justify-center px-6">
             <span className="rounded bg-black/70 px-3 py-1 text-center text-lg font-semibold text-white">{caption}</span>

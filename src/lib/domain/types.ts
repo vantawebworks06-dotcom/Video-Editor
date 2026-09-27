@@ -2,6 +2,7 @@ import { z } from "zod";
 import { DEFAULT_SOURCE_AUDIO, SourceAudio } from "./sourceAudio";
 import { DEFAULT_VOICE, VoiceProcessing } from "./voice";
 import { DEFAULT_LOOK, Look } from "./look";
+import { DEFAULT_GRAPHICS_STYLE, Graphic, GraphicClip, GraphicsStyle } from "./graphics";
 
 // ---------------------------------------------------------------------------
 // Rights
@@ -401,6 +402,8 @@ export const ScenePlan = z.object({
   visualStrategy: VisualStrategy,
   visualNeeds: z.array(VisualNeed),
   textOverlay: TextOverlayPlan,
+  /** Designed graphics in this scene (times relative to the scene start). */
+  graphics: z.array(Graphic).optional(),
   meme: MemePlan,
   motion: z.object({ type: MotionType, intensity: z.number() }),
   transition: Transition,
@@ -511,6 +514,8 @@ export const Timeline = z.object({
   paperStyle: PaperStyle,
   visuals: z.array(VisualClip),
   texts: z.array(TextClip),
+  /** Designed graphics (lower thirds, tags, quotes…), output time, style resolved. */
+  graphics: z.array(GraphicClip).optional(),
   captions: z.object({
     mode: CaptionMode,
     words: z.array(Word),
@@ -579,6 +584,8 @@ export const ProjectSettings = z.object({
   voice: VoiceProcessing.default(DEFAULT_VOICE),
   /** Default image look for every visual (a clip can override it). */
   look: Look.default(DEFAULT_LOOK),
+  /** Theme, accent colour and size of designed graphics. */
+  graphics: GraphicsStyle.default(DEFAULT_GRAPHICS_STYLE),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
@@ -612,6 +619,7 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   sourceAudioDefault: DEFAULT_SOURCE_AUDIO,
   voice: DEFAULT_VOICE,
   look: DEFAULT_LOOK,
+  graphics: DEFAULT_GRAPHICS_STYLE,
 };
 
 /** Measured editing characteristics of a reference video (all values measured, none invented). */

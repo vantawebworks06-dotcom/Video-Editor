@@ -170,6 +170,10 @@ async function fonts() {
   const list = [
     { file: "Anton-Regular.ttf", url: "https://github.com/google/fonts/raw/main/ofl/anton/Anton-Regular.ttf" },
     { file: "Inter.ttf", url: "https://github.com/google/fonts/raw/main/ofl/inter/Inter%5Bopsz%2Cwght%5D.ttf" },
+    // Typography themes (graphics engine): serif for quotes/editorial, condensed for bars, mono for dates.
+    { file: "PlayfairDisplay.ttf", url: "https://github.com/google/fonts/raw/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf" },
+    { file: "Oswald.ttf", url: "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald%5Bwght%5D.ttf" },
+    { file: "IBMPlexMono-Regular.ttf", url: "https://github.com/google/fonts/raw/main/ofl/ibmplexmono/IBMPlexMono-Regular.ttf" },
   ];
   await mkdir(library.fontsDir, { recursive: true });
   for (const f of list) {

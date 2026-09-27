@@ -29,7 +29,9 @@
     "test:research": "tsx --env-file-if-exists=.env.local scripts/test-research.ts",
     "test:sources": "tsx --env-file-if-exists=.env.local scripts/test-sources.ts",
     "test:voice": "tsx --env-file-if-exists=.env.local scripts/test-voice.ts",
-    "test:looks": "tsx --env-file-if-exists=.env.local scripts/test-looks.ts"
+    "test:looks": "tsx --env-file-if-exists=.env.local scripts/test-looks.ts",
+    "test:graphics": "tsx --env-file-if-exists=.env.local scripts/test-graphics.ts",
+    "test:graphics-preview": "tsx --env-file-if-exists=.env.local scripts/test-graphics-preview.tsx"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",
@@ -39,6 +41,7 @@
     "ffmpeg-static": "^5.3.0",
     "ffprobe-static": "^3.1.0",
     "next": "16.3.6",
+    "opentype.js": "^1.3.4",
     "puppeteer-core": "^25.12.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
@@ -49,6 +52,7 @@
     "@tailwindcss/postcss": "^4",
     "@types/ffprobe-static": "^2.0.3",
     "@types/node": "^20",
+    "@types/opentype.js": "^1.3.10",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",

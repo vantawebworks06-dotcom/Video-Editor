@@ -1,5 +1,9 @@
 import type { TextClip, Timeline, Word } from "@/lib/domain/types";
+import { assTime as ts, escapeAss } from "./assUtil";
+import { graphicEvents, graphicStyles } from "./graphicsAss";
 import { fontAvailable } from "./library";
+
+export { escapeAss };
 
 /**
  * Build an ASS subtitle document for text emphasis and captions. Text lives in this file,
@@ -18,11 +22,14 @@ export function buildAss(t: Timeline): string {
     `Style: Emphasis,${textFont},120,&H00FFFFFF,&H000000FF,&H00101010,&H96000000,0,0,0,0,100,100,2,0,1,${outline * 2},${outline},5,60,60,60,1`,
     `Style: Statement,${textFont},96,&H00101010,&H000000FF,&H00FFFFFF,&H00F2F2F2,0,0,0,0,100,100,1,0,3,${Math.round(outline * 4)},0,5,80,80,60,1`,
     `Style: Stat,${textFont},170,&H0000D7FF,&H000000FF,&H00101010,&H96000000,0,0,0,0,100,100,2,0,1,${outline * 2},${outline},5,60,60,60,1`,
+    ...graphicStyles(),
     `Style: Caption,${capFont},${capSize},&H00FFFFFF,&H000000FF,&H00000000,&H80000000,1,0,0,0,100,100,0,0,1,${outline + 1},${Math.max(1, outline - 1)},2,${Math.round(W * 0.08)},${Math.round(W * 0.08)},${Math.round(H * 0.07)},1`,
   ];
 
   const events: string[] = [];
   for (const clip of t.texts) events.push(...textEvents(clip, W, H));
+  const captionsBottom = t.captions.mode !== "OFF" && t.captions.position === "bottom";
+  for (const g of t.graphics ?? []) events.push(...graphicEvents(g, W, H, { captionsBottom }));
   if (t.captions.mode !== "OFF") events.push(...captionEvents(t, W, H));
 
   return [
@@ -43,19 +50,6 @@ export function buildAss(t: Timeline): string {
     ...events,
     "",
   ].join("\n");
-}
-
-/** Strip ASS control characters from user/AI text. */
-export function escapeAss(text: string): string {
-  return text.replace(/[{}\\]/g, "").replace(/\r?\n/g, " ").trim();
-}
-
-function ts(seconds: number): string {
-  const s = Math.max(0, seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = s % 60;
-  return `${h}:${String(m).padStart(2, "0")}:${sec.toFixed(2).padStart(5, "0")}`;
 }
 
 function anchor(pos: TextClip["position"], W: number, H: number): { an: number; x: number; y: number } {

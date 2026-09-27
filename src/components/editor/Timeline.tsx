@@ -7,6 +7,9 @@ import { type PlayheadStore, usePlayhead } from "./playhead";
 import type { Clip, EditData } from "./types";
 import { MEDIA_DRAG_TYPE } from "@/components/workstation/useMedia";
 import { SOURCE_MODE_LABEL } from "@/lib/domain/sourceAudio";
+import { GRAPHIC_KIND_LABEL, type GraphicKind } from "@/lib/domain/graphics";
+
+const GRAPHIC_COLOR: Record<GraphicKind, string> = { lower_third: "#f2b441", location: "#4fb3a9", date: "#7aa2f7", time_jump: "#c099ff", statistic: "#ff9e64", quote: "#e0af68", headline: "#bb9af7", chapter: "#9ece6a" };
 
 const ROW = "relative h-10 border-b border-line";
 
@@ -125,7 +128,7 @@ export const Timeline = memo(function Timeline({
             {label("Narration")}
             {label("Visuals")}
             {label("Source")}
-            {label("Text")}
+            {label("Text & graphics")}
             {label("SFX")}
             {label("Music")}
           </div>
@@ -227,6 +230,19 @@ export const Timeline = memo(function Timeline({
                     {p.textOverlay.text}
                   </button>
                 ))}
+              {data.plans.flatMap((p) =>
+                (p.graphics ?? []).map((g) => (
+                  <button
+                    key={`${p.sceneId}-${g.id}`}
+                    onClick={() => onSelectScene(p.sceneId)}
+                    title={`${GRAPHIC_KIND_LABEL[g.kind]}: ${g.title}${g.sub ? ` — ${g.sub}` : ""}`}
+                    className="absolute top-1 bottom-1 truncate rounded border-l-2 px-1 text-left text-[10px] text-foreground"
+                    style={{ left: x(p.startTime + g.at), width: Math.max(8, x(g.duration)), borderColor: GRAPHIC_COLOR[g.kind], background: `${GRAPHIC_COLOR[g.kind]}33` }}
+                  >
+                    {g.title}
+                  </button>
+                )),
+              )}
             </div>
             {/* sfx */}
             <div className={ROW}>

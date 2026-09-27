@@ -10,6 +10,7 @@ import type { PlayheadStore } from "./playhead";
 import { ClipControls } from "@/components/workstation/ClipControls";
 import { VoicePanel } from "@/components/workstation/VoicePanel";
 import { LookPanel } from "@/components/workstation/LookPanel";
+import { GraphicsPanel } from "@/components/workstation/GraphicsPanel";
 
 const TABS = ["Visual", "Text", "Motion", "Audio", "Source", "AI"] as const;
 type Tab = (typeof TABS)[number];
@@ -143,12 +144,19 @@ export function Inspector({
             </>
           ))}
 
-        {tab === "Text" &&
-          (plan ? (
-            <TextEditor key={`${plan.sceneId}-${JSON.stringify(plan.textOverlay)}`} plan={plan} busy={busy} onSave={(t) => void sceneAction({ action: "text", ...t }, "Text saved")} />
-          ) : (
-            <p className="text-xs text-muted">Select a scene to add or edit its text emphasis.</p>
-          ))}
+        {tab === "Text" && (
+          <>
+            <GraphicsPanel projectId={projectId} plan={plan} style={settings.graphics} playhead={playhead} busy={busy} run={run} />
+            {plan && (
+              <details className="border-t border-line pt-3">
+                <summary className="cursor-pointer text-xs font-semibold">Simple text emphasis</summary>
+                <div className="pt-2">
+                  <TextEditor key={`${plan.sceneId}-${JSON.stringify(plan.textOverlay)}`} plan={plan} busy={busy} onSave={(t) => void sceneAction({ action: "text", ...t }, "Text saved")} />
+                </div>
+              </details>
+            )}
+          </>
+        )}
 
         {tab === "Motion" &&
           (clip ? (

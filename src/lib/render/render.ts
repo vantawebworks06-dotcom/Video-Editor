@@ -189,7 +189,7 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
     }
   }
   const audio = buildAudioGraph(voiceTimeline, 1, sourceAudio, { voicePreprocessed: voiceTimeline !== timeline });
-  const hasText = timeline.texts.length > 0 || timeline.captions.mode !== "OFF";
+  const hasText = timeline.texts.length > 0 || timeline.captions.mode !== "OFF" || Boolean(timeline.graphics?.length);
   const videoFilter = hasText ? `[0:v]ass=overlay.ass:fontsdir='${fontsRel}',format=yuv420p[vout]` : `[0:v]format=yuv420p[vout]`;
   const filters = [videoFilter, ...audio.filters].join(";");
   const tmpOut = `${opts.outPath}.tmp.mp4`;
