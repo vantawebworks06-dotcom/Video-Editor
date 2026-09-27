@@ -1,7 +1,7 @@
 import { api } from "@/components/ui";
 import { getSupabaseEnv } from "@/lib/supabase/env";
 
-export type UploadKind = "narration" | "reference" | "music" | "script";
+export type UploadKind = "narration" | "reference" | "music" | "script" | "media";
 
 const ATTEMPTS = 3;
 
@@ -43,7 +43,7 @@ function putSigned(objectPath: string, token: string, file: File, onProgress?: (
  * Validate → signed upload straight to Supabase Storage (with progress, retried on network
  * errors/5xx) → server-side byte sniffing.
  */
-export async function uploadProjectFile(projectId: string, kind: UploadKind, file: File, opts: { onProgress?: (fraction: number) => void; signal?: AbortSignal } = {}) {
+export async function uploadProjectFile<T = unknown>(projectId: string, kind: UploadKind, file: File, opts: { onProgress?: (fraction: number) => void; signal?: AbortSignal; meta?: Record<string, unknown> } = {}): Promise<T> {
   const start = await api<{ path: string; token: string }>(`/api/projects/${projectId}/uploads`, {
     method: "POST",
     json: { step: "start", kind, filename: file.name, mime: file.type || "application/octet-stream", size: file.size },
@@ -58,5 +58,5 @@ export async function uploadProjectFile(projectId: string, kind: UploadKind, fil
       await new Promise((r) => setTimeout(r, 1000 * attempt));
     }
   }
-  await api(`/api/projects/${projectId}/uploads`, { method: "POST", json: { step: "complete", kind, path: start.path } });
+  return api<T>(`/api/projects/${projectId}/uploads`, { method: "POST", json: { step: "complete", kind, path: start.path, ...(opts.meta ? { meta: { filename: file.name, ...opts.meta } } : {}) } });
 }

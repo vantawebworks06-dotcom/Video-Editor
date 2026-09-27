@@ -1,7 +1,8 @@
 import type { ProviderCredentials } from "@/lib/media/providers/types";
+import type { ResearchCredentials } from "@/lib/research/types";
 
 /** All server-side credentials. Never serialise this object into a response. */
-export interface ResolvedCredentials extends ProviderCredentials {
+export interface ResolvedCredentials extends ProviderCredentials, ResearchCredentials {
   anthropic?: string;
   openai?: string;
 }
@@ -17,6 +18,11 @@ export const CREDENTIAL_ENV: Record<CredentialName, string> = {
   wikimediaToken: "WIKIMEDIA_ACCESS_TOKEN",
   internetArchive: "INTERNET_ARCHIVE_KEYS",
   openai: "OPENAI_API_KEY",
+  youtube: "YOUTUBE_API_KEY",
+  xBearer: "X_BEARER_TOKEN",
+  metaOembed: "META_OEMBED_TOKEN",
+  reddit: "REDDIT_CREDENTIALS",
+  brave: "BRAVE_SEARCH_API_KEY",
 };
 
 export function resolveEnvCredentials(): ResolvedCredentials {
@@ -25,6 +31,10 @@ export function resolveEnvCredentials(): ResolvedCredentials {
     const v = process.env[env]?.trim();
     if (v) out[name] = v;
   }
+  // Reddit is usually configured as two variables.
+  const rid = process.env.REDDIT_CLIENT_ID?.trim();
+  const rsecret = process.env.REDDIT_CLIENT_SECRET?.trim();
+  if (!out.reddit && rid && rsecret) out.reddit = `${rid}:${rsecret}`;
   return out;
 }
 

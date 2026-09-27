@@ -4,6 +4,7 @@ import {
   type NormalizedAsset,
   type OutputFormat,
   type ProjectSettings,
+  type MusicCue,
   type ScenePlan,
   type SfxClip,
   type StyleProfile,
@@ -16,6 +17,8 @@ import { cardOf, isGraphic } from "./cards";
 import type { SceneSelection } from "./generate";
 import { buildMusicPlan } from "./music";
 import { NARRATION_ASSET_PREFIX } from "./originalFootage";
+import { applySources } from "./sourceTimeline";
+import { DEFAULT_SOURCE_AUDIO } from "@/lib/domain/sourceAudio";
 
 export const TEXT_FONT = "Anton";
 export const CAPTION_FONT = "Inter";
@@ -70,7 +73,9 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
   const duration = round(Math.max(input.transcript.duration, input.plans.at(-1)?.endTime ?? 0) + 0.6);
 
   // Visuals: contiguous from 0 to duration (gaps closed by extending the previous clip).
-  const sorted = [...input.selections].sort((a, b) => a.start - b.start).filter((s) => s.duration > 0.05);
+  // Source footage (interviews/news with their own audio) is laid in afterwards.
+  const sorted = [...input.selections].filter((s) => s.role !== "source").sort((a, b) => a.start - b.start).filter((s) => s.duration > 0.05);
+  const sourceSelections = input.selections.filter((s) => s.role === "source" && s.duration > 0.2).sort((a, b) => a.start - b.start);
   const visuals: VisualClip[] = [];
   for (const [i, s] of sorted.entries()) {
     const start = i === 0 ? 0 : visuals.at(-1)!.start + visuals.at(-1)!.duration;
@@ -95,8 +100,36 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     });
   }
 
-  // Dip to black: the outgoing clip fades out as the next one fades in; the film ends on a fade out.
+  // Dip to black: the outgoing clip fades out as the next one fades in.
   for (let i = 1; i < visuals.length; i++) if (visuals[i]!.transitionIn === "dip_to_black") visuals[i - 1]!.transitionOut = "dip_to_black";
+
+  // Source footage: pause/overlap insert time (narration pauses), duck/visual-only overlay the picture.
+  const src = applySources(
+    visuals,
+    sourceSelections.map((s) => ({
+      audio: s.sourceAudio ?? input.settings.sourceAudioDefault ?? DEFAULT_SOURCE_AUDIO,
+      clip: {
+        id: s.clipId,
+        sceneId: s.sceneId,
+        start: round(s.start),
+        duration: round(s.duration),
+        asset: toAssetRef(s.asset),
+        alternates: [],
+        trimStart: s.trimStart,
+        layout: "fullscreen",
+        motion: { type: "none", intensity: 0 },
+        treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite },
+        annotations: s.annotations,
+        transitionIn: s.transitionIn ?? "hard_cut",
+        role: "source",
+      },
+    })),
+    duration,
+  );
+  visuals.splice(0, visuals.length, ...src.visuals);
+  const outT = src.map;
+  const outDuration = src.duration;
+  // The film ends on a fade out.
   if (visuals.length && visuals.at(-1)!.duration > 1.2) visuals.at(-1)!.transitionOut = "dip_to_black";
 
   // Designed cards: large text (and a smaller line under it) over the card's texture.
@@ -119,11 +152,11 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
   const onCard = (t: number) => visuals.some((v) => isGraphic(sorted.find((x) => x.clipId === v.id)?.asset ?? { provider: "pexels" }) && t >= v.start && t < v.start + v.duration);
 
   const texts: TextClip[] = input.plans
-    .filter((p) => p.textOverlay.enabled && p.textOverlay.text && !onCard(p.startTime + p.textOverlay.at))
+    .filter((p) => p.textOverlay.enabled && p.textOverlay.text && !onCard(outT(p.startTime + p.textOverlay.at)))
     .map((p) => ({
       id: `${p.sceneId}_text`,
       sceneId: p.sceneId,
-      start: round(p.startTime + p.textOverlay.at),
+      start: round(outT(p.startTime + p.textOverlay.at)),
       duration: round(p.textOverlay.duration),
       text: p.textOverlay.text,
       style: p.textOverlay.style,
@@ -138,7 +171,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
   const sfx: SfxClip[] = [];
   for (const p of input.plans) {
     for (const [i, c] of p.sfx.entries()) {
-      sfx.push({ id: `${p.sceneId}_sfx${i}`, kind: c.kind, start: round(p.startTime + c.at), volume: 1 });
+      sfx.push({ id: `${p.sceneId}_sfx${i}`, kind: c.kind, start: round(outT(p.startTime + c.at)), volume: 1 });
     }
   }
   for (const v of visuals.filter((v) => v.role === "meme")) {
@@ -147,7 +180,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
   // Riser into high-importance scenes after the first.
   for (const p of input.plans.slice(1)) {
     if (p.importance === "high" && !p.sfx.some((c) => c.kind === "riser")) {
-      sfx.push({ id: `${p.sceneId}_riser`, kind: "riser", start: round(Math.max(0, p.startTime - 1.5)), volume: 0.5 });
+      sfx.push({ id: `${p.sceneId}_riser`, kind: "riser", start: round(Math.max(0, outT(p.startTime) - 1.5)), volume: 0.5 });
     }
   }
 
@@ -171,13 +204,13 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     width,
     height,
     fps,
-    duration,
+    duration: outDuration,
     paperStyle: input.settings.paperStyle,
     visuals,
     texts,
     captions: {
       mode: input.settings.captions,
-      words: input.transcript.words,
+      words: src.inserts.length ? input.transcript.words.map((w) => ({ ...w, start: round(outT(w.start, "after")), end: round(outT(w.end, "before")) })) : input.transcript.words,
       emphasized,
       font: CAPTION_FONT,
       fontSize: Math.round((width < height ? 64 : 54) * (height / 1080) * (width < height ? 0.6 : 1)),
@@ -187,14 +220,27 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
       voice: input.voicePath,
       music: input.musicPath,
       musicCues: input.resolveTrack
-        ? buildMusicPlan({ plans: input.plans, duration, settings: input.settings, resolveTrack: input.resolveTrack, style: input.style, uploadedPath: input.settings.musicTrack === "uploaded" ? input.musicPath : null })
+        ? stretchCues(buildMusicPlan({ plans: input.plans, duration, settings: input.settings, resolveTrack: input.resolveTrack, style: input.style, uploadedPath: input.settings.musicTrack === "uploaded" ? input.musicPath : null }), outT, outDuration)
         : undefined,
       ambience: input.ambiencePath ?? null,
       sfx: sfx.sort((a, b) => a.start - b.start),
       mix: input.settings.mix,
+      inserts: src.inserts.length ? src.inserts : undefined,
+      voiceDucks: src.voiceDucks.length ? src.voiceDucks : undefined,
     },
     attributions,
   });
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Music planned in narration time, stretched over the pauses inserted for source footage. */
+function stretchCues(cues: MusicCue[], outT: (t: number, side?: "before" | "after") => number, outDuration: number): MusicCue[] {
+  return cues.map((c) => {
+    const start = round(outT(c.start, "after"));
+    const end = round(Math.min(outDuration, outT(c.end, "before")));
+    const k = (end - start) / Math.max(0.001, c.end - c.start);
+    if (Math.abs(k - 1) < 1e-6 && start === c.start) return c;
+    return { ...c, start, end, gains: c.gains.map((g) => ({ t: round(g.t * k), g: g.g })), mutes: c.mutes?.map((m) => ({ from: round(outT(c.start + m.from) - start), to: round(outT(c.start + m.to) - start) })) };
+  });
+}

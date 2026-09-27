@@ -13,6 +13,13 @@ const PatchBody = z.object({
   settings: ProjectSettings.omit({ mix: true }).partial().extend({ mix: AudioMix.partial().optional() }).optional(),
 });
 
+/** The project's script/transcript text (not in the polled status payload: it can be 200 KB). */
+export const GET = route(async (_req: NextRequest, ctx: RouteContext<"/api/projects/[id]">) => {
+  const auth = await requireUser();
+  const p = await requireProject(auth, (await ctx.params).id, "id, name, script");
+  return NextResponse.json({ id: p.id, name: p.name, script: (p.script as string | null) ?? "" });
+});
+
 export const PATCH = route(async (req: NextRequest, ctx: RouteContext<"/api/projects/[id]">) => {
   const auth = await requireUser();
   const project = await requireProject(auth, (await ctx.params).id);

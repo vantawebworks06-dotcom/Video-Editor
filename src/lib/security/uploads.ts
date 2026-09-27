@@ -3,7 +3,7 @@
  * object name is generated server-side, the extension/MIME must be on an allow-list, and the
  * first bytes are sniffed. Duration and decodability are verified with ffprobe by the worker.
  */
-export type UploadKind = "narration" | "reference" | "music" | "script" | "image";
+export type UploadKind = "narration" | "reference" | "music" | "script" | "image" | "media";
 
 interface KindRule {
   folder: "audio" | "assets";
@@ -34,6 +34,8 @@ export const UPLOAD_RULES: Record<UploadKind, KindRule> = {
   music: { folder: "audio", maxBytes: 50 * MB, maxSeconds: 30 * 60, exts: AUDIO },
   script: { folder: "assets", maxBytes: 1 * MB, maxSeconds: null, exts: { txt: ["text/plain"] } },
   image: { folder: "assets", maxBytes: 20 * MB, maxSeconds: null, exts: { jpg: ["image/jpeg"], jpeg: ["image/jpeg"], png: ["image/png"], webp: ["image/webp"] } },
+  /** Project media library: the user's own photos, footage, screenshots, audio and music. */
+  media: { folder: "assets", maxBytes: 50 * MB, maxSeconds: 3 * 60 * 60, exts: { jpg: ["image/jpeg"], jpeg: ["image/jpeg"], png: ["image/png"], webp: ["image/webp"], gif: ["image/gif"], ...VIDEO, ...AUDIO } },
 };
 
 export function validateUploadRequest(kind: UploadKind, filename: string, mime: string, size: number): { ext: string } {
@@ -83,6 +85,8 @@ export function sniffMatches(ext: string, head: Uint8Array): boolean {
       return b(0) === 0x89 && ascii(1, 3) === "PNG";
     case "webp":
       return ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP";
+    case "gif":
+      return ascii(0, 4) === "GIF8";
     case "txt":
       return !head.slice(0, 512).some((c) => c === 0); // no NUL bytes
     default:

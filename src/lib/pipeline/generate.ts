@@ -1,3 +1,4 @@
+import type { SourceAudio } from "@/lib/domain/sourceAudio";
 import type {
   Annotation,
   Layout,
@@ -45,8 +46,13 @@ export interface SceneSelection {
   scores: Record<string, number> | null;
   overall: number | null;
   reason: string;
-  role: "primary" | "meme";
+  /** "source": inserted footage with its own audio (see sourceAudio). */
+  role: "primary" | "meme" | "source";
   selectedBy: "ai" | "heuristic" | "user";
+  /** Source clips: how their audio plays against the narration. */
+  sourceAudio?: SourceAudio;
+  /** The media library item this placement came from, when placed by the editor. */
+  mediaItemId?: string | null;
   layout: Layout;
   motion: MotionType;
   motionIntensity: number;

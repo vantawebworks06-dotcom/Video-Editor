@@ -2,6 +2,7 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
 import { z } from "zod";
+import { GENERATION_KINDS } from "@/lib/domain/types";
 import { createClient } from "@/lib/supabase/server";
 
 export class HttpError extends Error {
@@ -71,6 +72,7 @@ export async function activeJob(supabase: SupabaseClient, projectId: string) {
     .select("id, status")
     .eq("project_id", projectId)
     .in("status", ["QUEUED", "RUNNING"])
+    .in("kind", [...GENERATION_KINDS])
     .limit(1);
   return data?.[0] ?? null;
 }

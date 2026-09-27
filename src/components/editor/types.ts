@@ -1,3 +1,4 @@
+import type { SourceAudio } from "@/lib/domain/sourceAudio";
 import type { Annotation, NormalizedAsset, ProjectSettings, ScenePlan, Word } from "@/lib/domain/types";
 
 export interface Clip {
@@ -15,7 +16,10 @@ export interface Clip {
   scores: Record<string, number> | null;
   overall: number | null;
   reason: string;
-  role: "primary" | "meme";
+  role: "primary" | "meme" | "source";
+  /** Source clips: narration pause/duck/overlap/visual-only behaviour. */
+  sourceAudio?: SourceAudio;
+  mediaItemId?: string | null;
   selectedBy: "ai" | "heuristic" | "user";
   layout: string;
   motion: string;
@@ -75,6 +79,8 @@ export interface StatusData {
     settings: ProjectSettings;
   };
   pipelineJob: JobInfo | null;
+  /** Recent background tasks (media import, capture, narration processing). */
+  tasks: (JobInfo & { kind: string; payload?: Record<string, unknown> | null; completed_at?: string | null })[];
   renderJob: JobInfo | null;
   latestExport: { id: string; format: string; url: string | null; downloadUrl: string | null; local: boolean; size_bytes: number | null; duration: number | null; attributions: string[]; created_at: string } | null;
   narrationPath: string | null;

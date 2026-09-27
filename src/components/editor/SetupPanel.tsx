@@ -15,6 +15,60 @@ const PROVIDERS: { id: ProviderId; label: string }[] = [
   { id: "giphy", label: "GIPHY" },
 ];
 
+/** Paste or edit the documentary script/transcript (the text the narration is aligned to). */
+function ScriptEditor({ projectId, hasScript, disabled, onSaved }: { projectId: string; hasScript: boolean; disabled: boolean; onSaved: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [text, setText] = useState<string | null>(null);
+  const [state, setState] = useState<string | null>(null);
+  const load = async () => {
+    setOpen(true);
+    if (text !== null) return;
+    try {
+      setText((await api<{ script: string }>(`/api/projects/${projectId}`)).script);
+    } catch (e) {
+      setState((e as Error).message);
+      setText("");
+    }
+  };
+  const save = async () => {
+    setState("Saving…");
+    try {
+      await api(`/api/projects/${projectId}`, { method: "PATCH", json: { script: text?.trim() ? text : null } });
+      setState("Saved. The narration is re-aligned to it on the next generation; re-run the Script analysis to update it.");
+      onSaved();
+    } catch (e) {
+      setState((e as Error).message);
+    }
+  };
+  if (!open) {
+    return (
+      <Button size="sm" variant="ghost" disabled={disabled} onClick={() => void load()}>
+        {hasScript ? "View / edit script text" : "Paste script / transcript"}
+      </Button>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      <Label hint="exactly what is spoken">Script / transcript</Label>
+      {text === null ? (
+        <p className="text-xs text-muted">Loading…</p>
+      ) : (
+        <textarea value={text} onChange={(e) => setText(e.target.value)} rows={10} maxLength={200000} className="w-full rounded border border-line bg-background p-2 text-xs leading-relaxed outline-none focus:border-accent" placeholder="Paste the narration script…" />
+      )}
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="primary" disabled={disabled || text === null} onClick={() => void save()}>
+          Save script
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
+          Close
+        </Button>
+        <span className="text-[10px] text-muted">{text?.length.toLocaleString() ?? 0} / 200,000</span>
+      </div>
+      {state && <p className="text-[11px] text-muted">{state}</p>}
+    </div>
+  );
+}
+
 function FileRow({ kind, label, accept, has, disabled, onFile }: { kind: UploadKind; label: string; accept: string; has: boolean; disabled: boolean; onFile: (k: UploadKind, f: File | undefined) => void }) {
   return (
     <div>
@@ -68,6 +122,7 @@ export function SetupPanel({ status, onChanged, onAnalyzeReference }: { status: 
         <>
           <FileRow disabled={busy !== null} onFile={upload} kind="narration" label="Narration (audio or video)" accept=".mp3,.wav,.m4a,.aac,.ogg,.flac,.mp4,.mov,.webm" has={p.hasNarration} />
           <FileRow disabled={busy !== null} onFile={upload} kind="script" label="Script / transcript (.txt, optional)" accept=".txt" has={p.hasScript} />
+          <ScriptEditor projectId={p.id} hasScript={p.hasScript} disabled={busy !== null} onSaved={onChanged} />
           {!p.hasScript && <p className="text-[11px] text-muted">Without a script, transcription needs an OpenAI key (Settings).</p>}
         </>
       )}

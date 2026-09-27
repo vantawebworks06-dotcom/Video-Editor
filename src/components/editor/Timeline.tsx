@@ -5,6 +5,8 @@ import { cx, fmtTime } from "@/components/ui";
 import { stillThumbnail } from "@/lib/media/thumbnails";
 import { type PlayheadStore, usePlayhead } from "./playhead";
 import type { Clip, EditData } from "./types";
+import { MEDIA_DRAG_TYPE } from "@/components/workstation/useMedia";
+import { SOURCE_MODE_LABEL } from "@/lib/domain/sourceAudio";
 
 const ROW = "relative h-10 border-b border-line";
 
@@ -44,7 +46,14 @@ export const Timeline = memo(function Timeline({
   onSelectClip,
   onSelectScene,
   onSeek,
+  onDropMedia,
+  history,
+  onHistory,
 }: {
+  /** A media library item dropped at narration time t; asSource = dropped on the Source track. */
+  onDropMedia?: (itemId: string, t: number, asSource: boolean) => void;
+  history?: { undo: string | null; redo: string | null };
+  onHistory?: (action: "undo" | "redo") => void;
   data: EditData;
   peaks: number[] | null;
   playhead: PlayheadStore;
@@ -56,6 +65,29 @@ export const Timeline = memo(function Timeline({
   onSeek: (t: number) => void;
 }) {
   const [zoom, setZoom] = useState(40); // px per second
+  const [dropRow, setDropRow] = useState<"visual" | "source" | null>(null);
+  const pictures = useMemo(() => data.clips.filter((c) => c.role !== "source"), [data.clips]);
+  const sources = useMemo(() => data.clips.filter((c) => c.role === "source"), [data.clips]);
+  const dropProps = (row: "visual" | "source") =>
+    onDropMedia
+      ? {
+          onDragOver: (e: React.DragEvent) => {
+            if (!e.dataTransfer.types.includes(MEDIA_DRAG_TYPE)) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            setDropRow(row);
+          },
+          onDragLeave: () => setDropRow(null),
+          onDrop: (e: React.DragEvent<HTMLDivElement>) => {
+            const id = e.dataTransfer.getData(MEDIA_DRAG_TYPE);
+            setDropRow(null);
+            if (!id) return;
+            e.preventDefault();
+            const rect = e.currentTarget.getBoundingClientRect();
+            onDropMedia(id, Math.max(0, Math.round(((e.clientX - rect.left) / zoom) * 100) / 100), row === "source");
+          },
+        }
+      : {};
   const duration = Math.max(data.duration, data.plans.at(-1)?.endTime ?? 0, 1);
   const width = duration * zoom;
   const x = (t: number) => t * zoom;
@@ -68,8 +100,18 @@ export const Timeline = memo(function Timeline({
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center justify-between border-b border-line px-3 py-1.5 text-xs text-muted">
         <span>
-          Timeline · {data.plans.length} scenes · {data.clips.length} visuals · {fmtTime(duration)}
+          Timeline · {data.plans.length} scenes · {pictures.length} visuals{sources.length ? ` · ${sources.length} source clips` : ""} · {fmtTime(duration)} narration
         </span>
+        {onHistory && (
+          <span className="ml-auto mr-4 flex gap-1">
+            <button className="rounded border border-line px-2 py-0.5 hover:text-foreground disabled:opacity-40" disabled={!history?.undo} title={history?.undo ? `Undo: ${history.undo} (Ctrl+Z)` : "Nothing to undo"} onClick={() => onHistory("undo")}>
+              ↶ Undo
+            </button>
+            <button className="rounded border border-line px-2 py-0.5 hover:text-foreground disabled:opacity-40" disabled={!history?.redo} title={history?.redo ? `Redo: ${history.redo} (Ctrl+Shift+Z)` : "Nothing to redo"} onClick={() => onHistory("redo")}>
+              ↷ Redo
+            </button>
+          </span>
+        )}
         <label className="flex items-center gap-2">
           Zoom
           <input type="range" min={10} max={120} value={zoom} onChange={(e) => setZoom(Number(e.target.value))} />
@@ -82,6 +124,7 @@ export const Timeline = memo(function Timeline({
             {label("Scenes")}
             {label("Narration")}
             {label("Visuals")}
+            {label("Source")}
             {label("Text")}
             {label("SFX")}
             {label("Music")}
@@ -124,8 +167,8 @@ export const Timeline = memo(function Timeline({
               {peaks ? <Waveform peaks={peaks} /> : <WordBlocks words={data.words} duration={duration} />}
             </div>
             {/* visuals */}
-            <div className={ROW}>
-              {data.clips.map((c) => (
+            <div className={cx(ROW, dropRow === "visual" && "bg-accent/10")} {...dropProps("visual")}>
+              {pictures.map((c) => (
                 <button
                   key={c.rowId}
                   onClick={() => onSelectClip(c)}
@@ -146,6 +189,27 @@ export const Timeline = memo(function Timeline({
                     {c.asset.type}
                   </span>
                   {(c.asset.rightsStatus === "UNKNOWN" || c.asset.rightsStatus === "USER_REVIEW") && <span className="absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-accent" />}
+                </button>
+              ))}
+            </div>
+            {/* source footage (own audio): times are narration time; pause/overlap insert time at render */}
+            <div className={cx(ROW, dropRow === "source" && "bg-info/10")} {...dropProps("source")} data-seek={sources.length ? undefined : "1"}>
+              {!sources.length && <span className="pointer-events-none absolute inset-y-0 left-2 flex items-center text-[10px] text-muted/70">Drop interview / news footage here to play it with its audio</span>}
+              {sources.map((c) => (
+                <button
+                  key={c.rowId}
+                  onClick={() => onSelectClip(c)}
+                  title={`${c.asset.title} — ${c.sourceAudio ? SOURCE_MODE_LABEL[c.sourceAudio.mode] : "source"}`}
+                  className={cx("absolute top-0.5 bottom-0.5 overflow-hidden rounded border-2 bg-info/20", selectedClip === c.clipId ? "border-accent" : "border-info/70")}
+                  style={{ left: x(c.start), width: Math.max(3, x(c.duration) - 1) }}
+                >
+                  {c.asset.thumbnailUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element -- remote thumbnails
+                    <img src={stillThumbnail(c.asset.thumbnailUrl)} alt="" loading="lazy" className="pointer-events-none absolute inset-0 h-full w-full object-cover opacity-60" />
+                  )}
+                  <span className="absolute inset-x-0 bottom-0 truncate bg-black/70 px-1 text-left text-[9px] text-white">
+                    {c.sourceAudio ? SOURCE_MODE_LABEL[c.sourceAudio.mode] : "source"} · {c.asset.title}
+                  </span>
                 </button>
               ))}
             </div>

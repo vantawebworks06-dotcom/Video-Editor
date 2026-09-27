@@ -29,6 +29,7 @@ import { renderTimeline } from "@/lib/render/render";
 import { resolveCredentials } from "@/lib/settings/apiKeys";
 import { BUCKET, createAdminClient } from "@/lib/supabase/admin";
 import { transcribeWithWhisper } from "@/lib/transcription/whisper";
+import { captureTask, importMedia, type TaskDeps } from "./tasks";
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const ROOT = path.join(process.cwd(), ".cache");
@@ -38,6 +39,8 @@ const POLL_MS = Number(process.env.WORKER_POLL_MS ?? 3000);
 const MAX_NARRATION_SECONDS = 60 * 60;
 
 const db = createAdminClient();
+/** Job kinds whose failure/cancellation changes the project's status (they rebuild the edit). */
+const EDIT_KINDS = new Set(["generate", "regenerate_scenes"]);
 const log = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 
 // ---------------------------------------------------------------------------
@@ -163,7 +166,7 @@ interface JobRow {
   id: string;
   project_id: string;
   user_id: string;
-  kind?: "generate" | "regenerate_scenes" | "analyze_reference";
+  kind?: "generate" | "regenerate_scenes" | "analyze_reference" | "import_media" | "capture" | "process_audio";
   payload?: Record<string, unknown>;
   format?: OutputFormat;
 }
@@ -187,6 +190,11 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
       await send(stage, p);
     } else await throttled(stage, p);
   };
+
+  // Background tasks: short, independent of the edit.
+  const deps: TaskDeps = { db, root: ROOT, downloadObject, uploadFile, progress, log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`), signal };
+  if (job.kind === "import_media") return importMedia(job, deps);
+  if (job.kind === "capture") return captureTask(job, deps);
 
   const project = await loadProject(job.project_id);
   const settings = parseSettings(project.settings);
@@ -351,8 +359,10 @@ async function runRenderJob(job: JobRow, signal: AbortSignal) {
     outPath,
     draft: format === "draft",
     resolveLocal: async (ref: AssetRef) => {
+      // "uploaded:narration:<path>" = the narration video itself; "uploaded:<path>" = the user's media;
+      // "capture:<path>" = a screenshot captured into project storage.
+      if (ref.assetId.startsWith("capture:")) return downloadObject(ref.assetId.slice("capture:".length));
       if (!ref.assetId.startsWith("uploaded:")) return null;
-      // "uploaded:narration:<path>" = the narration video itself; "uploaded:<path>" = other uploads.
       return downloadObject(ref.assetId.slice("uploaded:".length).replace(/^narration:/, ""));
     },
     onStage: (s, p, m) => {
@@ -476,12 +486,12 @@ async function main() {
         } catch (err) {
           if (watch.signal.aborted) {
             log(`pipeline job ${pj.id} cancelled`);
-            if (pj.kind !== "analyze_reference") await restoreProjectStatus(pj.project_id);
+            if (EDIT_KINDS.has(pj.kind ?? "")) await restoreProjectStatus(pj.project_id);
           } else {
             const msg = (err as Error).message;
             log(`pipeline job ${pj.id} failed: ${msg}`);
             await db.from("pipeline_jobs").update({ status: "FAILED", error: msg.slice(0, 2000), completed_at: new Date().toISOString() }).eq("id", pj.id).eq("status", "RUNNING");
-            if (pj.kind !== "analyze_reference") await db.from("projects").update({ status: "error", last_error: msg.slice(0, 2000) }).eq("id", pj.project_id);
+            if (EDIT_KINDS.has(pj.kind ?? "")) await db.from("projects").update({ status: "error", last_error: msg.slice(0, 2000) }).eq("id", pj.project_id);
           }
         } finally {
           watch.stop();

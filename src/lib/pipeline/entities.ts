@@ -168,7 +168,8 @@ export function extractMentions(text: string): Mention[] {
     sentenceStart = endsSentence;
   }
   flush();
-  return [...found.values()].filter((m) => m.acronym || m.midSentence || m.count >= 2);
+  // A multi-word capitalised run is a name even when it only opens a sentence ("Vybz Kartel had…").
+  return [...found.values()].filter((m) => m.acronym || m.midSentence || m.count >= 2 || m.text.includes(" "));
 }
 
 // ---------------------------------------------------------------------------

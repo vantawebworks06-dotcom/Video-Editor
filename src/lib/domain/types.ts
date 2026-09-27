@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { DEFAULT_SOURCE_AUDIO, SourceAudio } from "./sourceAudio";
 
 // ---------------------------------------------------------------------------
 // Rights
@@ -30,6 +31,8 @@ export const ProviderId = z.enum([
   "library",
   /** Designed card (name/year/quote/statistic) rendered by DocuCut itself — no media file. */
   "graphic",
+  /** Screenshot of a public source captured into project storage (see capture/capture.ts). */
+  "capture",
 ]);
 export type ProviderId = z.infer<typeof ProviderId>;
 
@@ -440,7 +443,10 @@ export const VisualClip = z.object({
   transitionIn: Transition,
   /** Set on the clip before a dip_to_black so it fades out as the next one fades in. */
   transitionOut: Transition.optional(),
-  role: z.enum(["primary", "meme"]),
+  /** "source": inserted footage that plays its own audio (interview/news) — see sourceAudio. */
+  role: z.enum(["primary", "meme", "source"]),
+  /** Source clips: how their audio plays against the narration. */
+  sourceAudio: SourceAudio.optional(),
 });
 export type VisualClip = z.infer<typeof VisualClip>;
 
@@ -518,6 +524,10 @@ export const Timeline = z.object({
     ambience: z.string().nullable(),
     sfx: z.array(SfxClip),
     mix: AudioMix,
+    /** Narration pauses for source footage: narration time `at`, inserted `duration`, output time `outAt`. */
+    inserts: z.array(z.object({ at: z.number(), duration: z.number(), outAt: z.number() })).optional(),
+    /** Output-time windows where the narration is ducked under source audio. */
+    voiceDucks: z.array(z.object({ from: z.number(), to: z.number(), level: z.number(), ramp: z.number() })).optional(),
   }),
   attributions: z.array(z.string()),
 });
@@ -558,6 +568,8 @@ export const ProjectSettings = z.object({
   pacing: z.enum(["auto", "slow", "normal", "fast", "dynamic"]),
   musicIntensity: z.enum(["auto", "minimal", "cinematic", "dynamic", "intense"]),
   sfxIntensity: z.enum(["auto", "off", "low", "medium", "high"]),
+  /** Default behaviour of inserted source footage (each clip can override it). */
+  sourceAudioDefault: SourceAudio.default(DEFAULT_SOURCE_AUDIO),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
@@ -588,6 +600,7 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   pacing: "auto",
   musicIntensity: "auto",
   sfxIntensity: "auto",
+  sourceAudioDefault: DEFAULT_SOURCE_AUDIO,
 };
 
 /** Measured editing characteristics of a reference video (all values measured, none invented). */
@@ -649,6 +662,12 @@ export type RenderStatus = z.infer<typeof RenderStatus>;
 /** Job states in which a job can still be cancelled. */
 export const ACTIVE_PIPELINE_STATUSES = ["QUEUED", "RUNNING"] as const;
 export const ACTIVE_RENDER_STATUSES = ["QUEUED", "DOWNLOADING", "PREPARING", "RENDERING", "FINALIZING"] as const;
+/** Pipeline job kinds that build or re-plan the edit (one at a time per project). */
+export const GENERATION_KINDS = ["generate", "regenerate_scenes", "analyze_reference"] as const;
+/** Short background tasks (media import, source capture, narration processing) — never block generation. */
+export const TASK_KINDS = ["import_media", "capture", "process_audio"] as const;
+export type TaskKind = (typeof TASK_KINDS)[number];
+
 /** A cancelled job is stored as FAILED with exactly this error (no schema change needed). */
 export const JOB_CANCELLED = "Cancelled by user.";
 

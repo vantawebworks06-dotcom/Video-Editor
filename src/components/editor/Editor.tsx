@@ -14,7 +14,54 @@ import { createPlayhead } from "./playhead";
 import { Timeline } from "./Timeline";
 import type { Clip, EditData, StatusData } from "./types";
 import { useWaveform } from "./useWaveform";
+import type { SentenceAnalysis } from "@/lib/analysis/types";
+import { SceneBoard } from "@/components/workstation/SceneBoard";
+import { ScriptPanel } from "@/components/workstation/ScriptPanel";
+import { SentenceDetail } from "@/components/workstation/SentenceDetail";
+import { useAnalysis } from "@/components/workstation/useAnalysis";
+import { MediaLibrary } from "@/components/workstation/MediaLibrary";
+import { SourceRights } from "@/components/workstation/SourceRights";
+import { useMedia } from "@/components/workstation/useMedia";
+import type { SceneMediaStatus } from "@/components/workstation/SceneBoard";
+import { type ProviderInfoView, ResearchPanel, type ResearchRequestView } from "@/components/workstation/ResearchPanel";
 
+/** Top-level workstation sections (added as each one is built). */
+const SECTIONS = [
+  { id: "project", label: "Project" },
+  { id: "script", label: "Script" },
+  { id: "research", label: "Research" },
+  { id: "media", label: "Media" },
+  { id: "timeline", label: "Timeline" },
+] as const;
+type Section = (typeof SECTIONS)[number]["id"];
+
+/** The open section, remembered per project in this browser. */
+function useSection(projectId: string): [Section, (s: Section) => void] {
+  const key = `docucut:section:${projectId}`;
+  const [section, set] = useState<Section>(() => {
+    if (typeof window === "undefined") return "timeline";
+    try {
+      const v = localStorage.getItem(key);
+      return SECTIONS.some((x) => x.id === v) ? (v as Section) : "timeline";
+    } catch {
+      return "timeline";
+    }
+  });
+  const change = useCallback(
+    (s: Section) => {
+      set(s);
+      try {
+        localStorage.setItem(key, s);
+      } catch {
+        // storage unavailable (private mode): the section just isn't remembered
+      }
+    },
+    [key],
+  );
+  return [section, change];
+}
+
+const TASK_LABEL: Record<string, string> = { import_media: "Importing media", capture: "Capturing source", process_audio: "Processing narration" };
 const ACTIVE = ["QUEUED", "RUNNING", "DOWNLOADING", "PREPARING", "RENDERING", "FINALIZING"];
 const SIGNED_URL_REUSE_MS = 45 * 60_000; // the status route signs URLs for 1 h
 
@@ -38,7 +85,11 @@ export function Editor({ projectId }: { projectId: string }) {
   const [status, setStatus] = useState<StatusData | null>(null);
   const [edit, setEdit] = useState<EditData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [leftTab, setLeftTab] = useState<"scenes" | "setup">("scenes");
+  const [section, setSection] = useSection(projectId);
+  const [selectedSentence, setSelectedSentence] = useState<number | null>(null);
+  const [selectedItem, setSelectedItem] = useState<string | null>(null);
+  const [researchRequest, setResearchRequest] = useState<ResearchRequestView | null>(null);
+  const [providers, setProviders] = useState<ProviderInfoView[]>([]);
   const [selectedClip, setSelectedClip] = useState<string | null>(null);
   const [selectedScene, setSelectedScene] = useState<string | null>(null);
   const [checked, setChecked] = useState<Set<string>>(new Set());
@@ -162,7 +213,96 @@ export function Editor({ projectId }: { projectId: string }) {
     [playhead],
   );
 
+  // Undo/redo (server-side snapshots) and placing media library items on the timeline.
+  const [history, setHistory] = useState<{ undo: string | null; redo: string | null }>({ undo: null, redo: null });
+  const timelineVersion = status?.project.timelineVersion ?? 0;
+  useEffect(() => {
+    let alive = true;
+    api<{ undo: string | null; redo: string | null }>(`/api/projects/${projectId}/history`)
+      .then((h) => alive && setHistory(h))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [projectId, timelineVersion]);
+  const stepHistory = useCallback(
+    async (action: "undo" | "redo") => {
+      try {
+        const r = await api<{ undo: string | null; redo: string | null }>(`/api/projects/${projectId}/history`, { method: "POST", json: { action } });
+        setHistory({ undo: r.undo, redo: r.redo });
+        await refresh();
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    },
+    [projectId, refresh],
+  );
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const el = e.target as HTMLElement;
+      if (el.closest("input, textarea, select, [contenteditable=true]")) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        void stepHistory(e.shiftKey ? "redo" : "undo");
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        void stepHistory("redo");
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [stepHistory]);
+  const placeMedia = useCallback(
+    async (itemId: string, at: number, asSource: boolean) => {
+      try {
+        const r = await api<{ clipKey: string; sceneKey: string }>(`/api/projects/${projectId}/timeline/place`, { method: "POST", json: { itemId, at, asSource } });
+        await refresh();
+        setSelectedClip(r.clipKey);
+        setSelectedScene(r.sceneKey);
+      } catch (e) {
+        setError((e as Error).message);
+      }
+    },
+    [projectId, refresh],
+  );
+
   const peaks = useWaveform(status?.narrationUrl ?? null);
+  const analysis = useAnalysis(projectId, status?.project.timelineVersion ?? 0);
+  // Media reloads when the edit changes (placements change usage) or a background task finishes.
+  const taskKey = (status?.tasks ?? []).map((t) => `${t.id}:${t.status}`).join(",");
+  const media = useMedia(projectId, `${status?.project.timelineVersion ?? 0}|${taskKey}`);
+  const selectSentence = useCallback(
+    (s: SentenceAnalysis) => {
+      setSelectedSentence(s.idx);
+      seek(s.start);
+    },
+    [seek],
+  );
+
+  // Research sources and their configuration state (Settings → Integrations).
+  useEffect(() => {
+    let alive = true;
+    api<{ providers: ProviderInfoView[] }>("/api/integrations")
+      .then((r) => alive && setProviders(r.providers))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  // Alt+1…9 switch sections.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey) return;
+      const n = Number(e.key);
+      if (n >= 1 && n <= SECTIONS.length) {
+        e.preventDefault();
+        setSection(SECTIONS[n - 1]!.id);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setSection]);
 
   const enqueue = async (json: unknown) => {
     setBusy(true);
@@ -199,6 +339,136 @@ export function Editor({ projectId }: { projectId: string }) {
   const hasEdit = Boolean(edit?.clips.length);
   const canLive = Boolean(hasEdit && status.narrationUrl);
   const mode = watchMode ?? (status.latestExport?.url ? "render" : "live");
+
+  const sentence = analysis.analysis?.sentences.find((s) => s.idx === selectedSentence) ?? null;
+  const item = media.items.find((x) => x.id === selectedItem) ?? null;
+  const sceneMedia: Record<string, SceneMediaStatus> = {};
+  for (const it of media.items) {
+    const sc = it.sentenceIdx !== null ? analysis.analysis?.scenes[analysis.analysis.sentences[it.sentenceIdx]?.scene ?? -1] : undefined;
+    if (!sc) continue;
+    const b = (sceneMedia[sc.key] ??= { discovered: 0, approved: 0, rejected: 0, used: 0 });
+    if (it.status === "REJECTED") b.rejected++;
+    else if (it.status === "USED" || it.usage > 0) b.used++;
+    else if (it.status === "APPROVED") b.approved++;
+    else b.discovered++;
+  }
+
+  /** The generated edit's scenes, with batch regeneration (TIMELINE section). */
+  const sceneList = () =>
+    !edit?.plans.length ? (
+      <div className="space-y-3 p-4 text-sm text-muted">
+        <p>No edit yet.</p>
+        {!p.hasNarration ? <p>Open PROJECT and upload a narration (and ideally the script), then click Generate.</p> : <p>Click Generate to analyse the narration and build the timeline.</p>}
+      </div>
+    ) : (
+      <>
+        <div className="flex items-center justify-between border-b border-line px-3 py-2 text-xs">
+          <span className="text-muted">{checked.size} selected</span>
+          <Button size="sm" disabled={!checked.size || busy || ACTIVE.includes(pj?.status ?? "")} onClick={() => void enqueue({ type: "regenerate_scenes", sceneIds: [...checked] }).then(() => setChecked(new Set()))}>
+            Regenerate selected
+          </Button>
+        </div>
+        <ul className="divide-y divide-line">
+          {edit.plans.map((s) => (
+            <li key={s.sceneId} className={cx("flex gap-2 px-3 py-2.5 text-xs", (selectedScene ?? clip?.sceneId) === s.sceneId && "bg-panel-2")}>
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={checked.has(s.sceneId)}
+                onChange={(e) => {
+                  const n = new Set(checked);
+                  if (e.target.checked) n.add(s.sceneId);
+                  else n.delete(s.sceneId);
+                  setChecked(n);
+                }}
+              />
+              <button
+                className="min-w-0 flex-1 text-left"
+                onClick={() => {
+                  selectScene(s.sceneId);
+                  seek(s.startTime);
+                }}
+              >
+                <div className="mb-0.5 flex items-center gap-1.5">
+                  <span className="font-semibold">{s.sceneId.replace("scene_", "#")}</span>
+                  <span className="text-muted">{fmtTime(s.startTime)}</span>
+                  <Tag>{s.visualStrategy.replace(/_/g, " ")}</Tag>
+                  {s.importance === "high" && <Tag tone="accent">high</Tag>}
+                </div>
+                <p className="line-clamp-3 text-muted">{s.narration}</p>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </>
+    );
+
+  /** Watch / Review scenes (the edit itself). */
+  const preview = () => (
+    <>
+      <div className="flex items-center gap-1 border-b border-line bg-panel px-2">
+        {(["preview", "review"] as const).map((t) => (
+          <button key={t} onClick={() => setCenterTab(t)} className={cx("px-3 py-2 text-xs", centerTab === t ? "border-b-2 border-accent text-foreground" : "text-muted hover:text-foreground")}>
+            {t === "preview" ? "Watch" : `Review scenes${edit?.clips.length ? ` (${edit.clips.length})` : ""}`}
+          </button>
+        ))}
+        {centerTab === "preview" && canLive && status.latestExport?.url && (
+          <div className="ml-auto flex overflow-hidden rounded border border-line text-[11px]">
+            {(["live", "render"] as const).map((m) => (
+              <button key={m} onClick={() => setWatchMode(m)} className={cx("px-2.5 py-1", mode === m ? "bg-accent text-accent-ink" : "text-muted hover:text-foreground")}>
+                {m === "live" ? "Live edit" : "Last render"}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      {centerTab === "review" && edit && hasEdit ? (
+        <div className="min-h-0 flex-1 bg-background">
+          <ReviewPanel
+            projectId={projectId}
+            data={edit}
+            selectedClip={selectedClip}
+            onSelect={selectClip}
+            onReplace={(c, tab) => setReplacing({ clip: c, tab })}
+            onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
+            onChanged={() => void refresh()}
+          />
+        </div>
+      ) : (
+        <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-black p-4">
+          {pj && ACTIVE.includes(pj.status) && pj.kind !== "analyze_reference" && pj.kind !== "process_audio" && pj.kind !== "capture" && pj.kind !== "import_media" ? (
+            <AutoEditProgress stage={pj.current_stage ?? "Queued…"} progress={Number(pj.progress)} queued={pj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("pipeline")} />
+          ) : rj && ACTIVE.includes(rj.status) && !status.latestExport ? (
+            <AutoEditProgress stage={rj.status === "FINALIZING" ? "Finalizing…" : `Rendering… ${rj.current_stage ?? ""}`} progress={Number(rj.progress)} queued={rj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("render")} />
+          ) : mode === "live" && canLive && edit ? (
+            <LivePlayer data={edit} narrationUrl={status.narrationUrl!} captions={p.settings.captions !== "OFF"} playhead={playhead} mediaRef={videoRef} />
+          ) : status.latestExport?.url ? (
+            <>
+              <video
+                ref={videoRef as RefObject<HTMLVideoElement>}
+                key={status.latestExport.id}
+                src={status.latestExport.url}
+                preload="metadata"
+                controls
+                className="max-h-full max-w-full"
+                onTimeUpdate={(e) => playhead.set(e.currentTarget.currentTime)}
+              />
+              <div className="mt-2 text-[11px] text-muted">
+                Last render: {status.latestExport.format} · {new Date(status.latestExport.created_at).toLocaleString()}
+                {rj?.status === "COMPLETE" && (rj.warnings?.length ?? 0) > 0 && <span className="text-accent"> · {rj.warnings!.length} warning(s)</span>}
+              </div>
+            </>
+          ) : (
+            <div className="max-w-sm text-center text-sm text-muted">
+              <p className="mb-2 text-foreground">No render yet</p>
+              <p>{hasEdit ? "Render a Draft preview to see the edit. Only clips you change are re-rendered next time." : "Generate the edit first."}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+
 
   return (
     <div className="flex h-dvh min-h-0 flex-col">
@@ -239,6 +509,40 @@ export function Editor({ projectId }: { projectId: string }) {
         )}
       </header>
 
+      <nav className="flex items-center gap-0.5 border-b border-line bg-panel px-2" aria-label="Workstation sections">
+        {SECTIONS.map((x, i) => (
+          <button
+            key={x.id}
+            onClick={() => setSection(x.id)}
+            title={`${x.label} (Alt+${i + 1})`}
+            className={cx("px-3 py-2 text-[11px] font-semibold tracking-[0.12em] uppercase", section === x.id ? "border-b-2 border-accent text-foreground" : "text-muted hover:text-foreground")}
+          >
+            {x.label}
+          </button>
+        ))}
+      </nav>
+
+      {status.tasks.some((t) => ACTIVE.includes(t.status) || (t.status === "FAILED" && t.error !== JOB_CANCELLED)) && (
+        <div className="flex flex-wrap items-center gap-3 border-b border-line bg-panel px-4 py-1.5 text-[11px]">
+          {status.tasks
+            .filter((t) => ACTIVE.includes(t.status) || (t.status === "FAILED" && t.error !== JOB_CANCELLED))
+            .slice(0, 4)
+            .map((t) => (
+              <span key={t.id} className="flex items-center gap-2">
+                <span className={t.status === "FAILED" ? "text-danger" : "text-muted"}>
+                  {TASK_LABEL[t.kind] ?? t.kind}
+                  {t.status === "QUEUED" ? " — waiting for the worker" : t.status === "FAILED" ? ` failed: ${t.error}` : `: ${t.current_stage ?? "…"}`}
+                </span>
+                {t.status === "RUNNING" && (
+                  <span className="w-24">
+                    <Progress value={Number(t.progress)} />
+                  </span>
+                )}
+              </span>
+            ))}
+        </div>
+      )}
+
       {/* job status */}
       {(pj && (ACTIVE.includes(pj.status) || pj.status === "FAILED")) || (rj && (ACTIVE.includes(rj.status) || rj.status === "FAILED")) || error || p.lastError ? (
         <div className="space-y-1.5 border-b border-line bg-panel px-4 py-2 text-xs">
@@ -271,150 +575,69 @@ export function Editor({ projectId }: { projectId: string }) {
         </div>
       ) : null}
 
-      <div className="grid min-h-0 flex-1 grid-cols-[300px_1fr_340px]">
-        {/* LEFT: project / scenes */}
+      <div className={cx("grid min-h-0 flex-1", section === "research" ? "grid-cols-[320px_1fr_480px]" : "grid-cols-[320px_1fr_360px]")}>
+        {/* LEFT: project / transcript / scenes */}
         <aside className="flex min-h-0 flex-col border-r border-line bg-panel">
-          <div className="flex border-b border-line">
-            {(["scenes", "setup"] as const).map((t) => (
-              <button key={t} onClick={() => setLeftTab(t)} className={cx("flex-1 py-2 text-xs capitalize", leftTab === t ? "border-b-2 border-accent" : "text-muted")}>
-                {t === "setup" ? "Project" : "Scenes"}
-              </button>
-            ))}
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {leftTab === "setup" ? (
+          {section === "project" ? (
+            <div className="min-h-0 flex-1 overflow-auto">
               <SetupPanel status={status} onChanged={() => void refresh()} onAnalyzeReference={() => void enqueue({ type: "analyze_reference", apply: true })} />
-            ) : !edit?.plans.length ? (
-              <div className="space-y-3 p-4 text-sm text-muted">
-                <p>No edit yet.</p>
-                {!p.hasNarration ? <p>Open the Project tab and upload a narration (and ideally the script), then click Generate.</p> : <p>Click Generate to analyse the narration and build the timeline.</p>}
-              </div>
-            ) : (
-              <>
-                <div className="flex items-center justify-between border-b border-line px-3 py-2 text-xs">
-                  <span className="text-muted">{checked.size} selected</span>
-                  <Button size="sm" disabled={!checked.size || busy || ACTIVE.includes(pj?.status ?? "")} onClick={() => void enqueue({ type: "regenerate_scenes", sceneIds: [...checked] }).then(() => setChecked(new Set()))}>
-                    Regenerate selected
-                  </Button>
-                </div>
-                <ul className="divide-y divide-line">
-                  {edit.plans.map((s) => (
-                    <li key={s.sceneId} className={cx("flex gap-2 px-3 py-2.5 text-xs", (selectedScene ?? clip?.sceneId) === s.sceneId && "bg-panel-2")}>
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={checked.has(s.sceneId)}
-                        onChange={(e) => {
-                          const n = new Set(checked);
-                          if (e.target.checked) n.add(s.sceneId);
-                          else n.delete(s.sceneId);
-                          setChecked(n);
-                        }}
-                      />
-                      <button
-                        className="min-w-0 flex-1 text-left"
-                        onClick={() => {
-                          selectScene(s.sceneId);
-                          seek(s.startTime);
-                        }}
-                      >
-                        <div className="mb-0.5 flex items-center gap-1.5">
-                          <span className="font-semibold">{s.sceneId.replace("scene_", "#")}</span>
-                          <span className="text-muted">{fmtTime(s.startTime)}</span>
-                          <Tag>{s.visualStrategy.replace(/_/g, " ")}</Tag>
-                          {s.importance === "high" && <Tag tone="accent">high</Tag>}
-                        </div>
-                        <p className="line-clamp-3 text-muted">{s.narration}</p>
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              </>
-            )}
-          </div>
+            </div>
+          ) : section === "timeline" ? (
+            <div className="min-h-0 flex-1 overflow-auto">{sceneList()}</div>
+          ) : (
+            <ScriptPanel state={analysis} playhead={playhead} selected={selectedSentence} status={media.bySentence} onSelect={selectSentence} />
+          )}
         </aside>
 
-        {/* CENTER: preview / scene review */}
+        {/* CENTER: preview / section workspace */}
         <section className="flex min-h-0 flex-col">
-          <div className="flex items-center gap-1 border-b border-line bg-panel px-2">
-            {(["preview", "review"] as const).map((t) => (
-              <button key={t} onClick={() => setCenterTab(t)} className={cx("px-3 py-2 text-xs", centerTab === t ? "border-b-2 border-accent text-foreground" : "text-muted hover:text-foreground")}>
-                {t === "preview" ? "Watch" : `Review scenes${edit?.clips.length ? ` (${edit.clips.length})` : ""}`}
-              </button>
-            ))}
-            {centerTab === "preview" && canLive && status.latestExport?.url && (
-              <div className="ml-auto flex overflow-hidden rounded border border-line text-[11px]">
-                {(["live", "render"] as const).map((m) => (
-                  <button key={m} onClick={() => setWatchMode(m)} className={cx("px-2.5 py-1", mode === m ? "bg-accent text-accent-ink" : "text-muted hover:text-foreground")}>
-                    {m === "live" ? "Live edit" : "Last render"}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-          {centerTab === "review" && edit && hasEdit ? (
+          {section === "script" && analysis.analysis ? (
             <div className="min-h-0 flex-1 bg-background">
-              <ReviewPanel
-                projectId={projectId}
-                data={edit}
-                selectedClip={selectedClip}
-                onSelect={selectClip}
-                onReplace={(c, tab) => setReplacing({ clip: c, tab })}
-                onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
-                onChanged={() => void refresh()}
-              />
+              <SceneBoard analysis={analysis.analysis} clips={edit?.clips ?? []} mediaStatus={sceneMedia} selectedSentence={selectedSentence} onSelectSentence={selectSentence} />
+            </div>
+          ) : section === "media" ? (
+            <div className="min-h-0 flex-1 bg-background">
+              <MediaLibrary projectId={projectId} media={media} analysis={analysis.analysis} selected={selectedItem} onSelect={(it) => setSelectedItem(it.id)} uploadSentence={selectedSentence} />
             </div>
           ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center bg-black p-4">
-          {pj && ACTIVE.includes(pj.status) && pj.kind !== "analyze_reference" ? (
-            <AutoEditProgress stage={pj.current_stage ?? "Queued…"} progress={Number(pj.progress)} queued={pj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("pipeline")} />
-          ) : rj && ACTIVE.includes(rj.status) && !status.latestExport ? (
-            <AutoEditProgress stage={rj.status === "FINALIZING" ? "Finalizing…" : `Rendering… ${rj.current_stage ?? ""}`} progress={Number(rj.progress)} queued={rj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("render")} />
-          ) : mode === "live" && canLive && edit ? (
-            <LivePlayer data={edit} narrationUrl={status.narrationUrl!} captions={p.settings.captions !== "OFF"} playhead={playhead} mediaRef={videoRef} />
-          ) : status.latestExport?.url ? (
-            <>
-              <video
-                ref={videoRef as RefObject<HTMLVideoElement>}
-                key={status.latestExport.id}
-                src={status.latestExport.url}
-                preload="metadata"
-                controls
-                className="max-h-full max-w-full"
-                onTimeUpdate={(e) => playhead.set(e.currentTarget.currentTime)}
-              />
-              <div className="mt-2 text-[11px] text-muted">
-                Last render: {status.latestExport.format} · {new Date(status.latestExport.created_at).toLocaleString()}
-                {rj?.status === "COMPLETE" && (rj.warnings?.length ?? 0) > 0 && <span className="text-accent"> · {rj.warnings!.length} warning(s)</span>}
-              </div>
-            </>
-          ) : (
-            <div className="max-w-sm text-center text-sm text-muted">
-              <p className="mb-2 text-foreground">No render yet</p>
-              <p>{hasEdit ? "Render a Draft preview to see the edit. Only clips you change are re-rendered next time." : "Generate the edit first."}</p>
-            </div>
-          )}
-        </div>
+            preview()
           )}
         </section>
 
-        {/* RIGHT: inspector */}
-        <aside className="min-h-0 border-l border-line bg-panel">
-          <Inspector
-            projectId={projectId}
-            clip={clip}
-            plan={plan}
-            settings={p.settings}
-            hasMusicUpload={p.hasMusic}
-            onChanged={() => void refresh()}
-            onReplace={(c) => setReplacing({ clip: c, tab: "ai" })}
-            onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
-          />
+        {/* RIGHT: section tools */}
+        <aside className="min-h-0 overflow-auto border-l border-line bg-panel">
+          {section === "script" && analysis.analysis ? (
+            <SentenceDetail
+              analysis={analysis.analysis}
+              s={sentence}
+              onResearch={(x, g) => {
+                setSelectedSentence(x.idx);
+                setResearchRequest({ sentence: x.idx, query: g?.query ?? null, category: g?.category ?? null, nonce: Date.now() });
+                setSection("research");
+              }}
+            />
+          ) : section === "research" ? (
+            <ResearchPanel projectId={projectId} sentence={sentence} media={media} request={researchRequest} providers={providers} />
+          ) : section === "media" ? (
+            <SourceRights projectId={projectId} item={item} media={media} analysis={analysis.analysis} />
+          ) : (
+            <Inspector
+              playhead={playhead}
+              projectId={projectId}
+              clip={clip}
+              plan={plan}
+              settings={p.settings}
+              hasMusicUpload={p.hasMusic}
+              onChanged={() => void refresh()}
+              onReplace={(c) => setReplacing({ clip: c, tab: "ai" })}
+              onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
+            />
+          )}
         </aside>
       </div>
 
       {/* BOTTOM: timeline */}
-      <div className="h-[290px] shrink-0 border-t border-line bg-panel">
+      <div className="h-[330px] shrink-0 border-t border-line bg-panel">
         {edit && hasEdit ? (
           <Timeline
             data={edit}
@@ -426,6 +649,9 @@ export function Editor({ projectId }: { projectId: string }) {
             onSelectClip={selectClip}
             onSelectScene={selectScene}
             onSeek={seek}
+            onDropMedia={(id, t, asSource) => void placeMedia(id, t, asSource)}
+            history={history}
+            onHistory={(a) => void stepHistory(a)}
           />
         ) : (
           <div className="flex h-full items-center justify-center text-sm text-muted">The timeline appears after generation.</div>

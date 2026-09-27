@@ -9,6 +9,9 @@ export function cx(...c: (string | false | null | undefined)[]) {
   return c.filter(Boolean).join(" ");
 }
 
+/** A caller-supplied width class replaces the default full width (both would otherwise apply). */
+const hasWidth = (c: string | undefined) => /(^|\s)w-/.test(c ?? "");
+
 type Variant = "primary" | "secondary" | "ghost" | "danger";
 
 /**
@@ -44,14 +47,14 @@ export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
   return (
     <input
       {...props}
-      className={cx("h-9 w-full rounded-md border border-line bg-background px-3 text-sm outline-none placeholder:text-muted focus:border-accent", props.className)}
+      className={cx("h-9 rounded-md border border-line bg-background px-3 text-sm outline-none placeholder:text-muted focus:border-accent", !hasWidth(props.className) && "w-full", props.className)}
     />
   );
 }
 
 export function Select({ children, ...props }: SelectHTMLAttributes<HTMLSelectElement> & { children: ReactNode }) {
   return (
-    <select {...props} className={cx("h-9 w-full rounded-md border border-line bg-background px-2 text-sm outline-none focus:border-accent", props.className)}>
+    <select {...props} className={cx("h-9 rounded-md border border-line bg-background px-2 text-sm outline-none focus:border-accent", !hasWidth(props.className) && "w-full", props.className)}>
       {children}
     </select>
   );

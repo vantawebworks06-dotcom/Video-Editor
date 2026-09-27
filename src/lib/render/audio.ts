@@ -15,7 +15,7 @@ export interface AudioGraph {
  * with a sidechain compressor keyed by the voice. `firstInput` is the FFmpeg input index
  * the audio inputs start at.
  */
-export function buildAudioGraph(t: Timeline, firstInput: number): AudioGraph {
+export function buildAudioGraph(t: Timeline, firstInput: number, sourceAudio: Record<string, string> = {}): AudioGraph {
   const inputs: string[] = [];
   const filters: string[] = [];
   const mix = t.audio.mix;
@@ -25,11 +25,61 @@ export function buildAudioGraph(t: Timeline, firstInput: number): AudioGraph {
   const fmt = "aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo";
 
   let voiceKey: string | null = null;
+  const keys: string[] = [];
   if (t.audio.voice) {
-    inputs.push("-i", t.audio.voice);
-    const i = n++;
-    filters.push(`[${i}:a]${fmt},loudnorm=I=-16:TP=-1.5:LRA=11,volume=${mix.voiceVolume.toFixed(3)},apad,atrim=0:${D},asplit=3[voice][vkey1][vkey2]`);
+    const norm = `loudnorm=I=-16:TP=-1.5:LRA=11,volume=${mix.voiceVolume.toFixed(3)}`;
+    const inserts = t.audio.inserts ?? [];
+    if (!inserts.length) {
+      inputs.push("-i", t.audio.voice);
+      filters.push(`[${n++}:a]${fmt},${norm},apad,atrim=0:${D}[voicepre]`);
+    } else {
+      // Narration pauses for source footage: each part is its own input (seeked by the demuxer —
+      // splitting one stream into differently-trimmed branches deadlocks FFmpeg), joined with
+      // silence of each pause length, then normalised once so every part keeps the same level.
+      const bounds = [0, ...inserts.map((x) => x.at)];
+      const segs: string[] = [];
+      bounds.forEach((from, k) => {
+        const to = bounds[k + 1];
+        inputs.push("-ss", from.toFixed(3), ...(to === undefined ? [] : ["-t", (to - from).toFixed(3)]), "-i", t.audio.voice!);
+        const i = n++;
+        const fadeOut = to === undefined ? "" : `,afade=t=out:st=${Math.max(0, to - from - 0.04).toFixed(3)}:d=0.04`;
+        filters.push(`[${i}:a]${fmt},asetpts=PTS-STARTPTS${k ? ",afade=t=in:d=0.03" : ""}${fadeOut}[vp${k}]`);
+        segs.push(`[vp${k}]`);
+        if (to !== undefined) {
+          filters.push(`anullsrc=r=48000:cl=stereo,atrim=0:${inserts[k]!.duration.toFixed(3)},aformat=sample_fmts=fltp[vg${k}]`);
+          segs.push(`[vg${k}]`);
+        }
+      });
+      filters.push(`${segs.join("")}concat=n=${segs.length}:v=0:a=1,${norm},apad,atrim=0:${D}[voicepre]`);
+    }
+    // Duck windows (source footage in duck/overlap mode): smooth gain dips on the narration.
+    const ducks = t.audio.voiceDucks ?? [];
+    const duck = ducks.length
+      ? `,volume='${ducks.map((d) => `(1-${(1 - d.level).toFixed(3)}*max(0,min(1,min((t-${(d.from - d.ramp).toFixed(3)})/${d.ramp.toFixed(3)},(${(d.to + d.ramp).toFixed(3)}-t)/${d.ramp.toFixed(3)}))))`).join("*")}':eval=frame`
+      : "";
+    filters.push(`[voicepre]anull${duck},asplit=2[voice][vkeyv]`);
     buses.push("[voice]");
+    keys.push("[vkeyv]");
+  }
+
+  // Source footage audio (interviews/news): placed at its output time, with its fades and level.
+  for (const v of t.visuals) {
+    const file = sourceAudio[v.id];
+    const a = v.sourceAudio;
+    if (!file || !a || a.mode === "visual_only" || a.sourceVolume <= 0) continue;
+    inputs.push("-i", file);
+    const i = n++;
+    const ms = Math.round(v.start * 1000);
+    const len = v.duration;
+    const fi = Math.min(a.fadeIn, len / 2);
+    const fo = Math.min(a.fadeOut, len / 2);
+    filters.push(`[${i}:a]${fmt},atrim=0:${len.toFixed(3)},asetpts=PTS-STARTPTS,volume=${a.sourceVolume.toFixed(3)}${fi > 0 ? `,afade=t=in:d=${fi.toFixed(3)}` : ""}${fo > 0 ? `,afade=t=out:st=${(len - fo).toFixed(3)}:d=${fo.toFixed(3)}` : ""},adelay=${ms}|${ms},asplit=2[src_${i}][srck_${i}]`);
+    buses.push(`[src_${i}]`);
+    keys.push(`[srck_${i}]`);
+  }
+  // Music/ambience duck under everything spoken: narration and source dialogue.
+  if (keys.length) {
+    filters.push(`${keys.join("")}${keys.length > 1 ? `amix=inputs=${keys.length}:normalize=0:duration=longest:dropout_transition=0,` : "anull,"}apad,atrim=0:${D},asplit=2[vkey1][vkey2]`);
     voiceKey = "vkey";
   }
 

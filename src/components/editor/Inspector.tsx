@@ -6,6 +6,8 @@ import type { AnnotationKind, ProjectSettings, ScenePlan } from "@/lib/domain/ty
 import { MUSIC_TRACKS } from "@/lib/render/libraryTracks";
 import type { Clip } from "./types";
 import { uploadProjectFile } from "./upload";
+import type { PlayheadStore } from "./playhead";
+import { ClipControls } from "@/components/workstation/ClipControls";
 
 const TABS = ["Visual", "Text", "Motion", "Audio", "Source", "AI"] as const;
 type Tab = (typeof TABS)[number];
@@ -31,7 +33,9 @@ export function Inspector({
   onChanged,
   onReplace,
   onRegenerateScene,
+  playhead,
 }: {
+  playhead: PlayheadStore;
   projectId: string;
   clip: Clip | null;
   plan: ScenePlan | null;
@@ -106,7 +110,6 @@ export function Inspector({
                 <input type="checkbox" checked={clip.blackAndWhite} disabled={busy} onChange={(e) => void clipAction({ action: "update", blackAndWhite: e.target.checked })} />
                 Black &amp; white + grain
               </label>
-              <NumberField key={`d-${clip.clipId}-${clip.duration}`} label="Duration (s)" hint="neighbour in the scene absorbs the change" value={clip.duration} step={0.1} disabled={busy} onCommit={(v) => void clipAction({ action: "resize", duration: v })} />
               {clip.asset.type === "video" && <NumberField key={`t-${clip.clipId}-${clip.trimStart}`} label="Trim start (s)" value={clip.trimStart} step={0.5} disabled={busy} onCommit={(v) => void clipAction({ action: "update", trimStart: v })} />}
               <div className="flex gap-2">
                 <Button size="sm" disabled={busy} onClick={() => void clipAction({ action: "move", direction: -1 })}>
@@ -115,10 +118,11 @@ export function Inspector({
                 <Button size="sm" disabled={busy} onClick={() => void clipAction({ action: "move", direction: 1 })}>
                   Move →
                 </Button>
-                <Button size="sm" variant="danger" disabled={busy} onClick={() => confirm("Delete this visual? The neighbouring clip will fill its time.") && void clipAction({ action: "delete" })}>
+                <Button size="sm" variant="danger" disabled={busy} onClick={() => confirm(clip.role === "source" ? "Remove this source clip? The narration plays straight through again." : "Delete this visual? The neighbouring clip will fill its time.") && void clipAction({ action: "delete" })}>
                   Delete
                 </Button>
               </div>
+              <ClipControls clip={clip} playhead={playhead} busy={busy} defaults={settings.sourceAudioDefault} onAction={clipAction} />
             </>
           ) : (
             <p className="text-xs text-muted">Select a visual on the timeline.</p>

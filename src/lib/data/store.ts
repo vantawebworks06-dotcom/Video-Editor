@@ -8,6 +8,7 @@ import {
   ScenePlan as ScenePlanSchema,
   Transition as TransitionSchema,
 } from "@/lib/domain/types";
+import { SourceAudio as SourceAudioSchema } from "@/lib/domain/sourceAudio";
 import { type CachedSearch, type SearchCache, searchCacheTtlMs, stableHash } from "@/lib/media/cache";
 import type { GenerateResult, SceneSelection } from "@/lib/pipeline/generate";
 import { z } from "zod";
@@ -252,6 +253,8 @@ export function selectionToRow(ctx: { userId: string; projectId: string }, s: Sc
     treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite, transitionIn: s.transitionIn ?? null },
     annotations: s.annotations,
     alternates: s.alternates,
+    audio: s.sourceAudio ?? null,
+    media_item_id: s.mediaItemId ?? null,
     scores: s.scores,
     overall_score: s.overall,
     reason: s.reason,
@@ -267,7 +270,7 @@ export interface LoadedEdit {
 }
 
 const PLACEMENT_COLUMNS =
-  "id, clip_key, start_time, duration, need_type, need_description, queries, scores, overall_score, reason, role, selected_by, layout, motion, treatment, annotations, trim_start, scenes!inner(scene_key), assets!inner(*)";
+  "id, clip_key, start_time, duration, need_type, need_description, queries, scores, overall_score, reason, role, selected_by, layout, motion, treatment, annotations, trim_start, audio, media_item_id, scenes!inner(scene_key), assets!inner(*)";
 
 /**
  * Load plans + placements from the DB, re-validating JSON before it can reach the renderer.
@@ -317,6 +320,8 @@ export async function loadEdit(db: SupabaseClient, projectId: string, opts: { al
       transitionIn: TransitionSchema.safeParse(r.treatment?.transitionIn).data,
       annotations: r.annotations ?? [],
       trimStart: Number(r.trim_start),
+      sourceAudio: r.audio ? SourceAudioSchema.safeParse(r.audio).data : undefined,
+      mediaItemId: r.media_item_id ?? null,
     } as LoadedEdit["selections"][number];
   });
   return { plans, selections };

@@ -20,7 +20,12 @@ type Source = { kind: "video"; src: string; synced: boolean } | { kind: "image";
 function sourceFor(c: Clip, narrationUrl: string): Source | null {
   const a = c.asset;
   // The user's own narration video plays in sync with the narration itself.
-  if (a.provider === "uploaded") return { kind: "video", src: narrationUrl, synced: true };
+  if (a.id.startsWith("uploaded:narration:")) return { kind: "video", src: narrationUrl, synced: true };
+  // The user's own media and captures: signed storage URLs from the edit route.
+  if (a.provider === "uploaded" || a.provider === "capture") {
+    if (a.mediaUrl.startsWith("storage:")) return a.thumbnailUrl ? { kind: "image", src: a.thumbnailUrl, fallback: null } : null;
+    return a.type === "video" ? { kind: "video", src: a.mediaUrl, synced: false } : { kind: "image", src: a.mediaUrl, fallback: null };
+  }
   if (a.provider === "graphic") return { kind: "card" };
   if (a.type === "video") {
     if (MP4_PREVIEWS.has(a.provider) && a.previewUrl) return { kind: "video", src: a.previewUrl, synced: false };
@@ -250,6 +255,12 @@ export function LivePlayer({
           return s ? <ClipVisual key={c.rowId} clip={c} source={s} t={t} active={c === clips[idx]} visible={c === shown} playing={playing} /> : null;
         })}
         {idx >= 0 && !sources.get(clips[idx]!.rowId) && <div className="absolute inset-0 flex items-center justify-center text-xs text-muted">No preview for this clip</div>}
+        {idx >= 0 && clips[idx]!.role === "source" && (
+          // The live preview follows the narration clock: pauses/ducking for source footage happen in the render.
+          <div className="pointer-events-none absolute left-2 top-2 rounded bg-info/80 px-2 py-0.5 text-[10px] font-semibold text-white">
+            SOURCE · {clips[idx]!.sourceAudio?.mode === "visual_only" ? "picture only" : "its audio plays in the render"}
+          </div>
+        )}
         {caption && (
           <div className="pointer-events-none absolute inset-x-0 bottom-[8%] flex justify-center px-6">
             <span className="rounded bg-black/70 px-3 py-1 text-center text-lg font-semibold text-white">{caption}</span>

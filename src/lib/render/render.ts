@@ -3,7 +3,9 @@ import path from "node:path";
 import { type AssetRef, type RenderStatus, Timeline } from "@/lib/domain/types";
 import { buildAss } from "./ass";
 import { buildAudioGraph } from "./audio";
-import { probe, runFfmpeg } from "./ffmpeg";
+import { isAllowedMediaUrl, NETWORK_INPUT_ARGS, probe, runFfmpeg } from "./ffmpeg";
+import { stableHash } from "@/lib/media/cache";
+import { existsSync } from "node:fs";
 import { library, libraryReady } from "./library";
 import { type PrepareContext, type PreparedAsset, prepareAsset } from "./prepare";
 import { BLEND_TRANSITIONS, blendSegment, renderSegment } from "./segments";
@@ -90,6 +92,34 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
     await stage("DOWNLOADING", done / timeline.visuals.length, `Prepared ${done}/${timeline.visuals.length}`);
   });
 
+  // 1b. Source footage audio (interviews/news): the section of the original file's audio track.
+  const sourceAudio: Record<string, string> = {};
+  const withAudio = timeline.visuals.filter((v) => v.role === "source" && v.sourceAudio && v.sourceAudio.mode !== "visual_only");
+  if (withAudio.length) {
+    await stage("PREPARING", 0, `Extracting audio of ${withAudio.length} source clip(s)`);
+    const dir = path.join(cacheDir, "source-audio");
+    await mkdir(dir, { recursive: true });
+    for (const v of withAudio) {
+      const local = (await opts.resolveLocal?.(v.asset)) ?? v.asset.localPath;
+      const input = local ?? (isAllowedMediaUrl(v.asset.url) ? v.asset.url : null);
+      if (!input) {
+        warnings.push(`${v.id}: source audio unavailable (media host not allowed); played as visual only.`);
+        continue;
+      }
+      const info = await probe(input).catch(() => null);
+      if (!info?.hasAudio) {
+        warnings.push(`${v.id}: the source file has no audio track; played as visual only.`);
+        continue;
+      }
+      const out = path.join(dir, `${stableHash({ input, trim: v.trimStart, d: v.duration })}.wav`);
+      if (!existsSync(out)) {
+        await runFfmpeg([...(local ? [] : NETWORK_INPUT_ARGS), "-ss", v.trimStart.toFixed(3), "-i", input, "-t", (v.duration + 0.2).toFixed(3), "-vn", "-map", "0:a:0", "-ac", "2", "-ar", "48000", "-c:a", "pcm_s16le", `${out}.tmp.wav`], { timeoutMs: 5 * 60_000 });
+        await rename(`${out}.tmp.wav`, out);
+      }
+      sourceAudio[v.id] = out;
+    }
+  }
+
   // 2-3. PREPARING / RENDERING — per-clip segments, cached by content hash.
   await stage("PREPARING", 0, "Building filter graphs");
   const segments: string[] = new Array(timeline.visuals.length);
@@ -145,7 +175,7 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
   // Relative paths (cwd = workDir) keep Windows drive colons out of filter arguments.
   const fontsRel = path.relative(opts.workDir, library.fontsDir).replace(/\\/g, "/");
 
-  const audio = buildAudioGraph(timeline, 1);
+  const audio = buildAudioGraph(timeline, 1, sourceAudio);
   const hasText = timeline.texts.length > 0 || timeline.captions.mode !== "OFF";
   const videoFilter = hasText ? `[0:v]ass=overlay.ass:fontsdir='${fontsRel}',format=yuv420p[vout]` : `[0:v]format=yuv420p[vout]`;
   const filters = [videoFilter, ...audio.filters].join(";");

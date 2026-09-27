@@ -1,18 +1,26 @@
 import { createClaudeClient, testClaude } from "@/lib/ai/claude/client";
 import { getProvider } from "@/lib/media/providers";
+import { getResearchProvider } from "@/lib/research";
 import type { ConnectionStatus } from "@/lib/media/providers/types";
 import { canEncrypt, decryptSecret, encryptSecret } from "@/lib/security/crypto";
 import { createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
 import { CREDENTIAL_ENV, type CredentialName, keyHint, resolveEnvCredentials, type ResolvedCredentials } from "./credentials";
 
-export const CONNECTIONS: { id: CredentialName; label: string; required: boolean; purpose: string }[] = [
-  { id: "anthropic", label: "Claude", required: false, purpose: "Optional. Smarter scene planning, queries and visual ranking. Without it the built-in keyword director is used." },
-  { id: "pexels", label: "Pexels", required: false, purpose: "Stock photos and video" },
-  { id: "pixabay", label: "Pixabay", required: false, purpose: "Stock photos and video" },
-  { id: "giphy", label: "GIPHY", required: false, purpose: "Reaction GIFs and stickers (memes)" },
-  { id: "wikimediaToken", label: "Wikimedia Commons", required: false, purpose: "Archival photos/video — public API; optional OAuth token for higher limits" },
-  { id: "internetArchive", label: "Internet Archive", required: false, purpose: "Archival footage — public API; optional S3 keys (access:secret)" },
-  { id: "openai", label: "Transcription (OpenAI Whisper)", required: false, purpose: "Transcribe narration when no script is provided" },
+export type ConnectionGroup = "ai" | "research" | "media" | "transcription";
+
+export const CONNECTIONS: { id: CredentialName; label: string; required: boolean; purpose: string; group: ConnectionGroup; research?: string; paid?: boolean }[] = [
+  { id: "anthropic", label: "Claude", required: false, group: "ai", purpose: "Optional. Smarter scene planning, queries and visual ranking. Without it the built-in rule-based director and analysis are used." },
+  { id: "youtube", label: "YouTube", required: false, group: "research", research: "youtube", purpose: "Search videos and interviews (metadata + official embed). Footage itself is never downloaded." },
+  { id: "xBearer", label: "X (Twitter)", required: false, group: "research", research: "x", paid: true, purpose: "Search public posts from the last 7 days (pay-per-use). Older posts: paste their link (free)." },
+  { id: "reddit", label: "Reddit", required: false, group: "research", research: "reddit", purpose: "Search public posts — needs an app approved under Reddit's Responsible Builder Policy (client_id:client_secret)." },
+  { id: "metaOembed", label: "Facebook / Instagram", required: false, group: "research", research: "meta", purpose: "Optional oEmbed Read token (app-id|client-token) to preview pasted Facebook/Instagram posts. Meta has no public search." },
+  { id: "brave", label: "Brave Search", required: false, group: "research", research: "brave", paid: true, purpose: "Web, news, image and video search (credit-based; $5 free per month)." },
+  { id: "pexels", label: "Pexels", required: false, group: "media", research: "pexels", purpose: "Stock photos and video" },
+  { id: "pixabay", label: "Pixabay", required: false, group: "media", research: "pixabay", purpose: "Stock photos and video" },
+  { id: "giphy", label: "GIPHY", required: false, group: "media", research: "giphy", purpose: "Reaction GIFs and stickers (memes)" },
+  { id: "wikimediaToken", label: "Wikimedia Commons", required: false, group: "media", research: "wikimedia", purpose: "Archival photos/video — public API; optional OAuth token for higher limits" },
+  { id: "internetArchive", label: "Internet Archive", required: false, group: "media", research: "internet_archive", purpose: "Archival footage — public API; optional S3 keys (access:secret)" },
+  { id: "openai", label: "Transcription (OpenAI Whisper)", required: false, group: "transcription", purpose: "Optional: transcribe narration without a script (local Whisper is used otherwise)" },
 ];
 
 /** Credentials for a user: keys saved in Settings override environment variables. */
@@ -32,6 +40,9 @@ export async function resolveCredentials(userId: string | null): Promise<Resolve
 
 export interface ConnectionView {
   id: CredentialName;
+  group: ConnectionGroup;
+  research: string | null;
+  paid: boolean;
   label: string;
   purpose: string;
   required: boolean;
@@ -54,6 +65,9 @@ export async function listConnections(userId: string): Promise<ConnectionView[]>
     const isPublic = c.id === "wikimediaToken" || c.id === "internetArchive";
     return {
       id: c.id,
+      group: c.group,
+      research: c.research ?? null,
+      paid: Boolean(c.paid),
       label: c.label,
       purpose: c.purpose,
       required: c.required,
@@ -94,8 +108,16 @@ export async function testConnection(userId: string, provider: CredentialName): 
   if (provider === "anthropic") status = await testClaude(creds.anthropic);
   else if (provider === "openai") status = await testOpenAi(creds.openai);
   else {
-    const p = getProvider(provider === "wikimediaToken" ? "wikimedia" : provider === "internetArchive" ? "internet_archive" : provider);
-    status = p ? await p.test(creds) : { state: "error", message: "Unknown provider" };
+    const research = CONNECTIONS.find((c) => c.id === provider)?.research;
+    const rp = research ? getResearchProvider(research) : undefined;
+    if (rp && !getProvider(research as never)) {
+      const r = await rp.test(creds);
+      const map = { CONNECTED: "connected", NOT_CONNECTED: "invalid_key", REQUIRES_CONFIGURATION: "not_connected", RATE_LIMITED: "rate_limited", UNAVAILABLE: "error" } as const;
+      status = { state: map[r.state], message: r.message };
+    } else {
+      const p = getProvider(provider === "wikimediaToken" ? "wikimedia" : provider === "internetArchive" ? "internet_archive" : (provider as never));
+      status = p ? await p.test(creds) : { state: "error", message: "Unknown provider" };
+    }
   }
   if (hasServiceRole()) {
     await createAdminClient()

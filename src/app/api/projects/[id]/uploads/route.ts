@@ -3,6 +3,8 @@ import { z } from "zod";
 import { HttpError, parseBody, requireProject, requireUser, route } from "@/lib/api/server";
 import { sniffMatches, storagePathFor, UPLOAD_RULES, type UploadKind, validateUploadRequest } from "@/lib/security/uploads";
 import { BUCKET } from "@/lib/supabase/admin";
+import { createItem } from "@/lib/data/media";
+import { MediaCategory } from "@/lib/domain/media";
 
 const KINDS = Object.keys(UPLOAD_RULES) as [UploadKind, ...UploadKind[]];
 
@@ -13,7 +15,20 @@ const StartBody = z.object({
   mime: z.string().min(3).max(100),
   size: z.number().int().positive(),
 });
-const CompleteBody = z.object({ step: z.literal("complete"), kind: z.enum(KINDS), path: z.string().min(10).max(400) });
+const MediaMeta = z.object({
+  filename: z.string().max(300).optional(),
+  title: z.string().trim().max(500).optional(),
+  category: MediaCategory.optional(),
+  sentenceIdx: z.number().int().min(0).nullable().optional(),
+  rightsNotes: z.string().max(4000).nullable().optional(),
+  rightsConfirmed: z.boolean().optional(),
+  /** The research item this file is an authorised copy of (e.g. a YouTube video the user has rights to). */
+  derivedFrom: z.uuid().nullable().optional(),
+});
+const CompleteBody = z.object({ step: z.literal("complete"), kind: z.enum(KINDS), path: z.string().min(10).max(400), meta: MediaMeta.optional() });
+
+const IMAGE_EXT = new Set(["jpg", "jpeg", "png", "webp", "gif"]);
+const VIDEO_EXT = new Set(["mp4", "mov", "webm"]);
 
 const FIELD: Partial<Record<UploadKind, string>> = {
   narration: "narration_path",
@@ -51,6 +66,61 @@ export const POST = route(async (req: NextRequest, ctx: RouteContext<"/api/proje
   if (!sniffMatches(ext, bytes)) {
     await auth.supabase.storage.from(BUCKET).remove([body.path]);
     throw new HttpError(400, "The file contents do not match its type. Upload rejected.");
+  }
+
+  if (body.kind === "media") {
+    // A user file joins the media library: a renderable asset (images/video) + a media item with
+    // provenance. Rights stay "needs review" unless the user states they hold them.
+    const meta = body.meta ?? {};
+    const kind = IMAGE_EXT.has(ext) ? (ext === "gif" ? "gif" : "photo") : VIDEO_EXT.has(ext) ? "video" : "audio";
+    const confirmed = Boolean(meta.rightsConfirmed);
+    const title = (meta.title || meta.filename || `Upload ${new Date().toLocaleDateString()}`).replace(/\p{Cc}/gu, "").slice(0, 300);
+    let assetId: string | null = null;
+    if (kind !== "audio") {
+      const { data: asset, error } = await auth.supabase
+        .from("assets")
+        .insert({
+          user_id: auth.userId,
+          provider: "uploaded",
+          provider_asset_id: body.path,
+          type: kind,
+          title,
+          media_url: `storage:${body.path}`,
+          download_url: `storage:${body.path}`,
+          source_url: "User upload",
+          license: confirmed ? "Rights confirmed by the project owner" : "User-provided — rights not confirmed",
+          rights_status: confirmed ? "CLEAR" : "USER_REVIEW",
+          rights_notes: meta.rightsNotes ? [meta.rightsNotes] : [],
+          user_approved: true,
+          retrieved_at: new Date().toISOString(),
+          metadata: { categories: ["upload"] },
+        })
+        .select("id")
+        .single();
+      if (error) throw error;
+      assetId = asset.id;
+    }
+    const category = meta.category ?? (kind === "video" ? "video" : kind === "audio" ? "audio" : "photo");
+    const item = await createItem(auth.supabase, { userId: auth.userId, projectId: project.id }, {
+      category,
+      provider: "upload",
+      externalId: body.path,
+      title,
+      sourceUrl: null,
+      platform: "User upload",
+      assetId,
+      storagePath: body.path,
+      sentenceIdx: meta.sentenceIdx ?? null,
+      rightsNotes: meta.rightsNotes ?? null,
+      license: confirmed ? "Rights confirmed by the project owner" : null,
+      derivedFrom: meta.derivedFrom ?? null,
+      status: "APPROVED",
+      importedAt: new Date().toISOString(),
+      metadata: { originalFilename: meta.filename?.slice(0, 300) ?? null, fileType: kind, ext, rightsConfirmed: confirmed },
+    });
+    // The worker measures the file (dimensions, duration) and makes a thumbnail for video.
+    await auth.supabase.from("pipeline_jobs").insert({ project_id: project.id, user_id: auth.userId, kind: "import_media", payload: { itemId: item.id } });
+    return NextResponse.json({ ok: true, itemId: item.id });
   }
 
   if (body.kind === "script") {

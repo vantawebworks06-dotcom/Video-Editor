@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { requireProject, requireUser, route } from "@/lib/api/server";
+import { GENERATION_KINDS, TASK_KINDS } from "@/lib/domain/types";
 import { parseSettings } from "@/lib/data/project";
 import { localRenderSize } from "@/lib/render/localRenders";
 import { BUCKET } from "@/lib/supabase/admin";
@@ -18,12 +19,14 @@ export const GET = route(async (req: NextRequest, ctx: RouteContext<"/api/projec
   const knownExport = req.nextUrl.searchParams.get("exportId");
   const knownNarration = req.nextUrl.searchParams.get("narration");
   // All RLS-scoped, so they run together with the ownership check instead of after it.
-  const [p, pipeline, render, exp, usage] = await Promise.all([
+  const [p, pipeline, render, exp, usage, tasks] = await Promise.all([
     requireProject(auth, id, STATUS_COLUMNS),
-    auth.supabase.from("pipeline_jobs").select("id, kind, status, progress, current_stage, error, result, created_at, completed_at").eq("project_id", id).order("created_at", { ascending: false }).limit(1),
+    auth.supabase.from("pipeline_jobs").select("id, kind, status, progress, current_stage, error, result, created_at, completed_at").eq("project_id", id).in("kind", [...GENERATION_KINDS]).order("created_at", { ascending: false }).limit(1),
     auth.supabase.from("render_jobs").select("id, status, progress, current_stage, format, error, warnings, created_at, completed_at, output_path").eq("project_id", id).order("created_at", { ascending: false }).limit(1),
     auth.supabase.from("exports").select("id, format, storage_path, size_bytes, duration, attributions, created_at").eq("project_id", id).order("created_at", { ascending: false }).limit(1),
     auth.supabase.from("project_ai_usage").select("calls, cached_calls, input_tokens, output_tokens, cost_usd").eq("project_id", id).maybeSingle(),
+    // Background tasks (imports, captures, narration processing): recent ones, for progress chips.
+    auth.supabase.from("pipeline_jobs").select("id, kind, status, progress, current_stage, error, payload, result, created_at, completed_at").eq("project_id", id).in("kind", [...TASK_KINDS]).gte("created_at", new Date(Date.now() - 30 * 60_000).toISOString()).order("created_at", { ascending: false }).limit(12),
   ]);
 
   const stored = exp.data?.[0] ?? null;
@@ -62,6 +65,8 @@ export const GET = route(async (req: NextRequest, ctx: RouteContext<"/api/projec
       settings: parseSettings(p.settings),
     },
     pipelineJob: pipeline.data?.[0] ?? null,
+    // Failed tasks are reported for a few minutes, then drop out of the header.
+    tasks: (tasks.data ?? []).filter((t) => t.status !== "FAILED" || Date.now() - new Date(t.completed_at ?? t.created_at).getTime() < 5 * 60_000),
     renderJob: render.data?.[0] ?? null,
     latestExport,
     narrationPath,
