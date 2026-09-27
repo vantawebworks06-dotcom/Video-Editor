@@ -1,4 +1,5 @@
 import type { SourceAudio } from "@/lib/domain/sourceAudio";
+import type { Look } from "@/lib/domain/look";
 import type { Annotation, NormalizedAsset, ProjectSettings, ScenePlan, Word } from "@/lib/domain/types";
 
 export interface Clip {
@@ -25,6 +26,7 @@ export interface Clip {
   motion: string;
   motionIntensity: number;
   blackAndWhite: boolean;
+  look?: Look | null;
   annotations: Annotation[];
   trimStart: number;
   /** How the clip enters (editorial transition), when set. */

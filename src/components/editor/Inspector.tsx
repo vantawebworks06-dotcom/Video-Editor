@@ -8,6 +8,8 @@ import type { Clip } from "./types";
 import { uploadProjectFile } from "./upload";
 import type { PlayheadStore } from "./playhead";
 import { ClipControls } from "@/components/workstation/ClipControls";
+import { VoicePanel } from "@/components/workstation/VoicePanel";
+import { LookPanel } from "@/components/workstation/LookPanel";
 
 const TABS = ["Visual", "Text", "Motion", "Audio", "Source", "AI"] as const;
 type Tab = (typeof TABS)[number];
@@ -63,6 +65,15 @@ export function Inspector({
   };
   const clipAction = (json: unknown) => run(() => api(`/api/projects/${projectId}/clips/${clip!.clipId}`, { method: "PATCH", json }));
   const sceneAction = (json: unknown, done?: string) => run(() => api(`/api/projects/${projectId}/scenes/${plan!.sceneId}`, { method: "POST", json }), done);
+  const lookPanel = (
+    <LookPanel
+      clip={clip}
+      projectLook={settings.look}
+      busy={busy}
+      onClip={(look) => clipAction({ action: "update", look })}
+      onProject={(look, clearOverrides) => run(() => api(`/api/projects/${projectId}/look`, { method: "POST", json: { look, clearOverrides } }), "Project look applied")}
+    />
+  );
   const saveSettings = (s: Partial<ProjectSettings>) => run(() => api(`/api/projects/${projectId}`, { method: "PATCH", json: { settings: s } }));
 
   return (
@@ -123,9 +134,13 @@ export function Inspector({
                 </Button>
               </div>
               <ClipControls clip={clip} playhead={playhead} busy={busy} defaults={settings.sourceAudioDefault} onAction={clipAction} />
+              {lookPanel}
             </>
           ) : (
-            <p className="text-xs text-muted">Select a visual on the timeline.</p>
+            <>
+              <p className="text-xs text-muted">Select a visual on the timeline to edit it. The look below applies to the whole project.</p>
+              {lookPanel}
+            </>
           ))}
 
         {tab === "Text" &&
@@ -157,6 +172,8 @@ export function Inspector({
 
         {tab === "Audio" && (
           <>
+            <VoicePanel projectId={projectId} saved={settings.voice} playhead={playhead} onSave={async (voice) => void (await saveSettings({ voice }))} />
+            <div className="border-t border-line pt-3" />
             {plan ? (
               <SfxEditor plan={plan} busy={busy} onAdd={(kind, at) => void sceneAction({ action: "addSfx", kind, at })} onRemove={(index) => void sceneAction({ action: "removeSfx", index })} />
             ) : (

@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { lookFilters, lookValues } from "@/lib/domain/look";
 import { rename } from "node:fs/promises";
 import path from "node:path";
 import type { Annotation, MotionType, PaperStyle, VisualClip } from "@/lib/domain/types";
@@ -9,7 +10,7 @@ import { library } from "./library";
 import type { PreparedAsset } from "./prepare";
 
 /** Bump when filter graphs change so cached segments are invalidated. */
-export const RENDERER_VERSION = 3;
+export const RENDERER_VERSION = 4;
 
 export interface SegmentSpec {
   clip: VisualClip;
@@ -290,8 +291,10 @@ export async function renderSegment(spec: SegmentSpec, outDir: string): Promise<
   const outAR = W / H;
   let comp: string;
 
-  const bwChain = clip.treatment.blackAndWhite ? ",hue=s=0,eq=contrast=1.08" : "";
-  const grain = clip.treatment.grain ? ",noise=alls=9:allf=t" : "";
+  // Image look: grade on the media itself (paper/cards keep their colours), finish on the whole frame.
+  const look = clip.treatment.look ? lookFilters(lookValues(clip.treatment.look), { seed: Math.floor(seeded(`${clip.id}:look`)() * 1e6) }) : { media: "", frame: "" };
+  const bwChain = (clip.treatment.blackAndWhite ? ",hue=s=0,eq=contrast=1.08" : "") + look.media;
+  const grain = (clip.treatment.grain ? ",noise=alls=9:allf=t" : "") + look.frame;
 
   if (layout === "fullscreen" || !asset) {
     if (!asset) {
@@ -301,7 +304,7 @@ export async function renderSegment(spec: SegmentSpec, outDir: string): Promise<
     } else if (Math.abs(assetAR - outAR) / outAR > 0.35 || clip.role === "meme") {
       // Strong aspect mismatch (portrait photo, square GIF): blurred fill + fitted foreground.
       g.filters.push(`[${src}]fps=${fps},setsar=1,split[fa][fb]`);
-      g.filters.push(`[fa]scale=${even(W / 4)}:${even(H / 4)}:force_original_aspect_ratio=increase,crop=${even(W / 4)}:${even(H / 4)},gblur=sigma=6,scale=${W * up}:${H * up},eq=brightness=-0.08[fbg]`);
+      g.filters.push(`[fa]scale=${even(W / 4)}:${even(H / 4)}:force_original_aspect_ratio=increase,crop=${even(W / 4)}:${even(H / 4)},gblur=sigma=6,scale=${W * up}:${H * up},eq=brightness=-0.08${bwChain}[fbg]`);
       g.filters.push(`[fb]scale=${W * up}:${H * up}:force_original_aspect_ratio=decrease${bwChain}[ffg]`);
       g.filters.push(`[fbg][ffg]overlay=x=(W-w)/2:y=(H-h)/2,setsar=1[comp]`);
     } else {

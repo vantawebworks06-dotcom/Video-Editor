@@ -9,6 +9,7 @@ import {
   Transition as TransitionSchema,
 } from "@/lib/domain/types";
 import { SourceAudio as SourceAudioSchema } from "@/lib/domain/sourceAudio";
+import { Look as LookSchema } from "@/lib/domain/look";
 import { type CachedSearch, type SearchCache, searchCacheTtlMs, stableHash } from "@/lib/media/cache";
 import type { GenerateResult, SceneSelection } from "@/lib/pipeline/generate";
 import { z } from "zod";
@@ -250,7 +251,7 @@ export function selectionToRow(ctx: { userId: string; projectId: string }, s: Sc
     queries: s.queries,
     layout: s.layout,
     motion: { type: s.motion, intensity: s.motionIntensity },
-    treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite, transitionIn: s.transitionIn ?? null },
+    treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite, transitionIn: s.transitionIn ?? null, ...(s.look ? { look: s.look } : {}) },
     annotations: s.annotations,
     alternates: s.alternates,
     audio: s.sourceAudio ?? null,
@@ -318,6 +319,7 @@ export async function loadEdit(db: SupabaseClient, projectId: string, opts: { al
       motionIntensity: motion.intensity,
       blackAndWhite: Boolean(r.treatment?.blackAndWhite),
       transitionIn: TransitionSchema.safeParse(r.treatment?.transitionIn).data,
+      look: LookSchema.safeParse(r.treatment?.look).data ?? null,
       annotations: r.annotations ?? [],
       trimStart: Number(r.trim_start),
       sourceAudio: r.audio ? SourceAudioSchema.safeParse(r.audio).data : undefined,

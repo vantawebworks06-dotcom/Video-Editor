@@ -27,7 +27,9 @@
     "ui": "tsx --env-file-if-exists=.env.local scripts/ui.ts",
     "test:analysis": "tsx scripts/test-analysis.ts",
     "test:research": "tsx --env-file-if-exists=.env.local scripts/test-research.ts",
-    "test:sources": "tsx --env-file-if-exists=.env.local scripts/test-sources.ts"
+    "test:sources": "tsx --env-file-if-exists=.env.local scripts/test-sources.ts",
+    "test:voice": "tsx --env-file-if-exists=.env.local scripts/test-voice.ts",
+    "test:looks": "tsx --env-file-if-exists=.env.local scripts/test-looks.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.128.0",

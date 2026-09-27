@@ -29,7 +29,7 @@ import { renderTimeline } from "@/lib/render/render";
 import { resolveCredentials } from "@/lib/settings/apiKeys";
 import { BUCKET, createAdminClient } from "@/lib/supabase/admin";
 import { transcribeWithWhisper } from "@/lib/transcription/whisper";
-import { captureTask, importMedia, type TaskDeps } from "./tasks";
+import { captureTask, importMedia, processAudioTask, type TaskDeps } from "./tasks";
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
 const ROOT = path.join(process.cwd(), ".cache");
@@ -195,6 +195,7 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
   const deps: TaskDeps = { db, root: ROOT, downloadObject, uploadFile, progress, log: (m) => log(`[${job.id.slice(0, 8)}] ${m}`), signal };
   if (job.kind === "import_media") return importMedia(job, deps);
   if (job.kind === "capture") return captureTask(job, deps);
+  if (job.kind === "process_audio") return processAudioTask(job, { ...deps, narration: async (id) => (await narrationAudio(await loadProject(id))).path });
 
   const project = await loadProject(job.project_id);
   const settings = parseSettings(project.settings);

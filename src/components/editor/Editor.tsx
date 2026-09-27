@@ -441,7 +441,7 @@ export function Editor({ projectId }: { projectId: string }) {
           ) : rj && ACTIVE.includes(rj.status) && !status.latestExport ? (
             <AutoEditProgress stage={rj.status === "FINALIZING" ? "Finalizing…" : `Rendering… ${rj.current_stage ?? ""}`} progress={Number(rj.progress)} queued={rj.status === "QUEUED"} busy={busy} onCancel={() => void cancel("render")} />
           ) : mode === "live" && canLive && edit ? (
-            <LivePlayer data={edit} narrationUrl={status.narrationUrl!} captions={p.settings.captions !== "OFF"} playhead={playhead} mediaRef={videoRef} />
+            <LivePlayer data={edit} narrationUrl={status.narrationUrl!} captions={p.settings.captions !== "OFF"} playhead={playhead} mediaRef={videoRef} projectLook={p.settings.look} />
           ) : status.latestExport?.url ? (
             <>
               <video

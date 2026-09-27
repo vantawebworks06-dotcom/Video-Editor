@@ -15,7 +15,8 @@ export interface AudioGraph {
  * with a sidechain compressor keyed by the voice. `firstInput` is the FFmpeg input index
  * the audio inputs start at.
  */
-export function buildAudioGraph(t: Timeline, firstInput: number, sourceAudio: Record<string, string> = {}): AudioGraph {
+/** voicePreprocessed: the voice file is already processed and at its loudness target (voice processing). */
+export function buildAudioGraph(t: Timeline, firstInput: number, sourceAudio: Record<string, string> = {}, opts: { voicePreprocessed?: boolean } = {}): AudioGraph {
   const inputs: string[] = [];
   const filters: string[] = [];
   const mix = t.audio.mix;
@@ -27,7 +28,7 @@ export function buildAudioGraph(t: Timeline, firstInput: number, sourceAudio: Re
   let voiceKey: string | null = null;
   const keys: string[] = [];
   if (t.audio.voice) {
-    const norm = `loudnorm=I=-16:TP=-1.5:LRA=11,volume=${mix.voiceVolume.toFixed(3)}`;
+    const norm = `${opts.voicePreprocessed ? "" : "loudnorm=I=-16:TP=-1.5:LRA=11,"}volume=${mix.voiceVolume.toFixed(3)}`;
     const inserts = t.audio.inserts ?? [];
     if (!inserts.length) {
       inputs.push("-i", t.audio.voice);

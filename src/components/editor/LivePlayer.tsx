@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { fmtTime } from "@/components/ui";
 import type { Word } from "@/lib/domain/types";
+import { isNeutral, type Look, lookCss, lookValues } from "@/lib/domain/look";
 import { cardContent } from "./Inspector";
 import type { PlayheadStore } from "./playhead";
 import type { Clip, EditData } from "./types";
@@ -97,7 +98,7 @@ function captionChunks(words: Word[]): { start: number; end: number; text: strin
   return out;
 }
 
-function ClipVisual({ clip, source, t, active, visible, playing }: { clip: Clip; source: Source; t: number; active: boolean; visible: boolean; playing: boolean }) {
+function ClipVisual({ clip, source, t, active, visible, playing, projectLook }: { clip: Clip; source: Source; t: number; active: boolean; visible: boolean; playing: boolean; projectLook?: Look }) {
   const ref = useRef<HTMLVideoElement>(null);
   const [broken, setBroken] = useState(false);
   const placed = useRef<"on" | "off" | null>(null);
@@ -132,9 +133,12 @@ function ClipVisual({ clip, source, t, active, visible, playing }: { clip: Clip;
   }, [t, local, active, playing, clip, synced]);
 
   const fit = clip.role === "meme" || clip.layout !== "fullscreen" ? "object-contain" : "object-cover";
+  // Image look, approximated in CSS (colour via filters; vignette/fade as overlays). Cards keep their colours.
+  const lookV = source.kind === "card" ? null : lookValues(clip.look ?? projectLook ?? { preset: "none" } as Look);
+  const css = lookV && !isNeutral(lookV) ? lookCss(lookV) : null;
   const style = {
     transform: active ? motionTransform(clip, Math.min(1, local / Math.max(clip.duration, 0.01))) : undefined,
-    filter: clip.blackAndWhite ? "grayscale(1)" : undefined,
+    filter: [clip.blackAndWhite ? "grayscale(1)" : "", css?.filter ?? ""].join(" ").trim() || undefined,
   };
   const cls = `absolute inset-0 h-full w-full ${fit}`;
 
@@ -152,6 +156,8 @@ function ClipVisual({ clip, source, t, active, visible, playing }: { clip: Clip;
         <img src={broken ? source.fallback! : source.src} alt="" decoding="async" className={cls} style={style} onError={() => setBroken(true)} />
       )}
       </div>
+      {css && css.fade > 0 && <div className="pointer-events-none absolute inset-0 mix-blend-lighten" style={{ background: `rgba(40,40,40,${Math.min(1, css.fade * 1.2)})` }} />}
+      {css && css.vignette > 0 && <div className="pointer-events-none absolute inset-0" style={{ background: `radial-gradient(ellipse at center, transparent ${Math.round(70 - css.vignette * 30)}%, rgba(0,0,0,${(css.vignette * 0.75).toFixed(2)}) 100%)` }} />}
       {tr && <div className={`pointer-events-none absolute inset-0 tr-ov-${tr}`} />}
     </div>
   );
@@ -180,7 +186,10 @@ export function LivePlayer({
   captions,
   playhead,
   mediaRef,
+  projectLook,
 }: {
+  /** The project image look (clips without their own look follow it). */
+  projectLook?: Look;
   data: EditData;
   narrationUrl: string;
   captions: boolean;
@@ -252,7 +261,7 @@ export function LivePlayer({
       <div className="relative aspect-video max-h-[calc(100%-3.5rem)] w-full cursor-pointer overflow-hidden rounded bg-black" onClick={toggle}>
         {mounted.map((c) => {
           const s = sources.get(c.rowId);
-          return s ? <ClipVisual key={c.rowId} clip={c} source={s} t={t} active={c === clips[idx]} visible={c === shown} playing={playing} /> : null;
+          return s ? <ClipVisual key={c.rowId} clip={c} source={s} t={t} active={c === clips[idx]} visible={c === shown} playing={playing} projectLook={projectLook} /> : null;
         })}
         {idx >= 0 && !sources.get(clips[idx]!.rowId) && <div className="absolute inset-0 flex items-center justify-center text-xs text-muted">No preview for this clip</div>}
         {idx >= 0 && clips[idx]!.role === "source" && (

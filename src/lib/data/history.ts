@@ -1,6 +1,6 @@
 /**
- * Undo/redo for timeline edits. Before an edit the project's placements (scene_assets) and scene
- * plans are saved as an 'undo' snapshot; undo restores the newest one and saves the current state
+ * Undo/redo for timeline edits. Before an edit the project's placements (scene_assets), scene
+ * plans and project look (the one project setting changed by undoable edits) are saved as an 'undo' snapshot; undo restores the newest one and saves the current state
  * as 'redo'. A new edit clears the redo stack. Snapshots are owner-scoped (RLS).
  */
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -10,13 +10,15 @@ const KEEP = 40;
 interface State {
   placements: Record<string, unknown>[];
   plans: { id: string; plan: unknown }[];
+  /** settings.look at the time (absent in snapshots made before looks existed). */
+  look?: unknown;
 }
 
 async function capture(db: SupabaseClient, projectId: string): Promise<State> {
-  const [p, s] = await Promise.all([db.from("scene_assets").select("*").eq("project_id", projectId), db.from("scenes").select("id, plan").eq("project_id", projectId)]);
+  const [p, s, pr] = await Promise.all([db.from("scene_assets").select("*").eq("project_id", projectId), db.from("scenes").select("id, plan").eq("project_id", projectId), db.from("projects").select("settings").eq("id", projectId).single()]);
   if (p.error) throw new Error(p.error.message);
   if (s.error) throw new Error(s.error.message);
-  return { placements: p.data ?? [], plans: (s.data ?? []) as State["plans"] };
+  return { placements: p.data ?? [], plans: (s.data ?? []) as State["plans"], look: (pr.data?.settings as { look?: unknown } | null)?.look ?? null };
 }
 
 async function restore(db: SupabaseClient, projectId: string, state: State) {
@@ -31,6 +33,14 @@ async function restore(db: SupabaseClient, projectId: string, state: State) {
     if (error) throw new Error(`Restoring the timeline failed: ${error.message}`);
   }
   for (const p of state.plans.filter((x) => live.has(x.id))) await db.from("scenes").update({ plan: p.plan }).eq("id", p.id);
+  if ("look" in state) {
+    // Only the look: other settings (voice, music…) are not part of the undo history.
+    const { data } = await db.from("projects").select("settings").eq("id", projectId).single();
+    const settings = { ...((data?.settings as Record<string, unknown>) ?? {}) };
+    if (state.look) settings.look = state.look;
+    else delete settings.look;
+    await db.from("projects").update({ settings }).eq("id", projectId);
+  }
 }
 
 async function bump(db: SupabaseClient, projectId: string) {

@@ -1,4 +1,5 @@
 import type { SourceAudio } from "@/lib/domain/sourceAudio";
+import type { Look } from "@/lib/domain/look";
 import type {
   Annotation,
   Layout,
@@ -57,6 +58,8 @@ export interface SceneSelection {
   motion: MotionType;
   motionIntensity: number;
   blackAndWhite: boolean;
+  /** Image look override for this clip (null/absent = the project look). */
+  look?: Look | null;
   annotations: Annotation[];
   trimStart: number;
   /** How this clip enters (beat- or scene-level editorial choice). */

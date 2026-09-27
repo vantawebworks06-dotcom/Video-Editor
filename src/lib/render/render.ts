@@ -3,6 +3,7 @@ import path from "node:path";
 import { type AssetRef, type RenderStatus, Timeline } from "@/lib/domain/types";
 import { buildAss } from "./ass";
 import { buildAudioGraph } from "./audio";
+import { processVoice } from "@/lib/audio/voiceMeasure";
 import { isAllowedMediaUrl, NETWORK_INPUT_ARGS, probe, runFfmpeg } from "./ffmpeg";
 import { stableHash } from "@/lib/media/cache";
 import { existsSync } from "node:fs";
@@ -175,7 +176,19 @@ export async function renderTimeline(input: Timeline, opts: RenderOptions): Prom
   // Relative paths (cwd = workDir) keep Windows drive colons out of filter arguments.
   const fontsRel = path.relative(opts.workDir, library.fontsDir).replace(/\\/g, "/");
 
-  const audio = buildAudioGraph(timeline, 1, sourceAudio);
+  // Narration processing: rendered once into a cached file (the same audio the A/B preview plays).
+  let voiceTimeline = timeline;
+  const vp = timeline.audio.voiceProcessing;
+  if (vp && vp.preset !== "off" && timeline.audio.voice) {
+    if (/^https?:/i.test(timeline.audio.voice)) warnings.push("Voice processing skipped: the narration is not a local file.");
+    else {
+      await stage("PREPARING", 0, "Processing narration");
+      const processed = await processVoice(timeline.audio.voice, vp, { cacheDir: path.join(cacheDir, "voice") });
+      voiceTimeline = { ...timeline, audio: { ...timeline.audio, voice: processed.path } };
+      opts.log?.(`voice processed (${vp.preset}): ${processed.hash}`);
+    }
+  }
+  const audio = buildAudioGraph(voiceTimeline, 1, sourceAudio, { voicePreprocessed: voiceTimeline !== timeline });
   const hasText = timeline.texts.length > 0 || timeline.captions.mode !== "OFF";
   const videoFilter = hasText ? `[0:v]ass=overlay.ass:fontsdir='${fontsRel}',format=yuv420p[vout]` : `[0:v]format=yuv420p[vout]`;
   const filters = [videoFilter, ...audio.filters].join(";");

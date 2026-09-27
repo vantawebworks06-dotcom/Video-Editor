@@ -1,5 +1,7 @@
 import { z } from "zod";
 import { DEFAULT_SOURCE_AUDIO, SourceAudio } from "./sourceAudio";
+import { DEFAULT_VOICE, VoiceProcessing } from "./voice";
+import { DEFAULT_LOOK, Look } from "./look";
 
 // ---------------------------------------------------------------------------
 // Rights
@@ -438,7 +440,8 @@ export const VisualClip = z.object({
   trimStart: z.number(),
   layout: Layout,
   motion: z.object({ type: MotionType, intensity: z.number() }),
-  treatment: z.object({ blackAndWhite: z.boolean(), grain: z.boolean() }),
+  /** look: the resolved image look (clip override or project default); absent = none. */
+  treatment: z.object({ blackAndWhite: z.boolean(), grain: z.boolean(), look: Look.optional() }),
   annotations: z.array(Annotation),
   transitionIn: Transition,
   /** Set on the clip before a dip_to_black so it fades out as the next one fades in. */
@@ -528,6 +531,8 @@ export const Timeline = z.object({
     inserts: z.array(z.object({ at: z.number(), duration: z.number(), outAt: z.number() })).optional(),
     /** Output-time windows where the narration is ducked under source audio. */
     voiceDucks: z.array(z.object({ from: z.number(), to: z.number(), level: z.number(), ramp: z.number() })).optional(),
+    /** Narration processing; absent or "off" = loudness normalisation only. */
+    voiceProcessing: VoiceProcessing.optional(),
   }),
   attributions: z.array(z.string()),
 });
@@ -570,6 +575,10 @@ export const ProjectSettings = z.object({
   sfxIntensity: z.enum(["auto", "off", "low", "medium", "high"]),
   /** Default behaviour of inserted source footage (each clip can override it). */
   sourceAudioDefault: SourceAudio.default(DEFAULT_SOURCE_AUDIO),
+  /** Narration processing (noise reduction, EQ, de-essing, compression, loudness). */
+  voice: VoiceProcessing.default(DEFAULT_VOICE),
+  /** Default image look for every visual (a clip can override it). */
+  look: Look.default(DEFAULT_LOOK),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
@@ -601,6 +610,8 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   musicIntensity: "auto",
   sfxIntensity: "auto",
   sourceAudioDefault: DEFAULT_SOURCE_AUDIO,
+  voice: DEFAULT_VOICE,
+  look: DEFAULT_LOOK,
 };
 
 /** Measured editing characteristics of a reference video (all values measured, none invented). */

@@ -3,10 +3,13 @@
  * media (dimensions, duration, thumbnail), capturing sources, processing narration audio.
  */
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rename } from "node:fs/promises";
 import path from "node:path";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { probe, runFfmpeg } from "@/lib/render/ffmpeg";
+import { processVoice } from "@/lib/audio/voiceMeasure";
+import { parseSettings } from "@/lib/data/project";
+import { VoiceProcessing } from "@/lib/domain/voice";
 
 export interface TaskDeps {
   db: SupabaseClient;
@@ -145,4 +148,50 @@ export async function captureTask(job: TaskJob, d: TaskDeps) {
   if (mErr) throw new Error(mErr.message);
   d.log(`captured ${item.source_url} via ${r.method} → ${objectPath} (${r.width}x${r.height})`);
   return { itemId: created.id, method: r.method, width: r.width, height: r.height };
+}
+
+/**
+ * Process the narration with the requested voice settings and upload two previews for A/B
+ * listening: the processed narration and the original at the same loudness (a fair comparison —
+ * louder always sounds "better"). The processed file is the render's cached voice as well.
+ */
+export async function processAudioTask(job: TaskJob, d: TaskDeps & { narration: (projectId: string) => Promise<string> }) {
+  const { data: project } = await d.db.from("projects").select("settings").eq("id", job.project_id).single();
+  const settings = parseSettings(project?.settings);
+  const parsed = VoiceProcessing.safeParse(job.payload?.voice);
+  const voice = parsed.success ? parsed.data : settings.voice;
+  const t0 = Date.now();
+  const lap = (what: string) => d.log(`  ${what} at ${((Date.now() - t0) / 1000).toFixed(1)} s`);
+  await d.progress("Measuring the narration…", 0.05);
+  const src = await d.narration(job.project_id);
+  lap("narration ready");
+  // Same directory the renderer uses (render.ts: <.cache>/voice), so a render reuses this work.
+  const cacheDir = path.join(d.root, "voice");
+  const processed = await processVoice(src, voice, { cacheDir, onProgress: (p) => void d.progress("Processing the narration…", 0.1 + p * 0.6).catch(() => undefined) });
+  d.signal.throwIfAborted();
+  lap("processed");
+
+  await d.progress("Encoding previews…", 0.75);
+  const enc = async (input: string, filter: string, name: string) => {
+    const out = path.join(cacheDir, name);
+    if (!existsSync(out)) await runFfmpeg(["-i", input, "-vn", "-map", "0:a:0", "-af", filter, "-ac", "1", "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart", `${out}.tmp.m4a`], { timeoutMs: 20 * 60_000 });
+    if (!existsSync(out)) await rename(`${out}.tmp.m4a`, out);
+    return out;
+  };
+  const target = processed.values.loudness;
+  // The original at the processed loudness: one exact gain from the measurement (no second loudnorm pass).
+  const gain = target - processed.measurement.loudness;
+  const [after, before] = await Promise.all([
+    enc(processed.path, "anull", `preview-${processed.hash}.m4a`),
+    enc(src, `aresample=48000,volume=${gain.toFixed(2)}dB,alimiter=limit=0.84:level=disabled`, `original-${processed.hash}.m4a`),
+  ]);
+  lap("encoded");
+  const base = `${job.project_id}/audio`;
+  const afterPath = `${base}/voice-${processed.hash}.m4a`;
+  const beforePath = `${base}/voice-original-${processed.hash}.m4a`;
+  await d.uploadFile(after, afterPath, "audio/mp4");
+  await d.uploadFile(before, beforePath, "audio/mp4");
+  lap("uploaded");
+  d.log(`voice ${voice.preset} → ${processed.hash}`);
+  return { voice, values: processed.values, measurement: processed.measurement, notes: processed.notes, hash: processed.hash, afterPath, beforePath };
 }

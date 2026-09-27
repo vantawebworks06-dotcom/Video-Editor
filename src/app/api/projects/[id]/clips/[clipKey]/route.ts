@@ -5,6 +5,7 @@ import { undoable } from "@/lib/data/history";
 import { parseSettings } from "@/lib/data/project";
 import { cutBase, loadRows, newClipKey, type Row } from "@/lib/data/timelineOps";
 import { SourceAudio } from "@/lib/domain/sourceAudio";
+import { Look } from "@/lib/domain/look";
 import { Annotation, Layout, MotionType, Transition } from "@/lib/domain/types";
 
 const Body = z.discriminatedUnion("action", [
@@ -14,6 +15,8 @@ const Body = z.discriminatedUnion("action", [
     layout: Layout.optional(),
     motion: z.object({ type: MotionType, intensity: z.number().min(0).max(0.3) }).optional(),
     blackAndWhite: z.boolean().optional(),
+    /** Image look override; null = follow the project look. */
+    look: Look.nullable().optional(),
     annotations: z.array(Annotation).max(8).optional(),
   }),
   z.object({
@@ -107,6 +110,11 @@ export const PATCH = route(async (req: NextRequest, ctx: RouteContext<"/api/proj
             blackAndWhite: body.blackAndWhite,
             grain: body.blackAndWhite,
           };
+        if (body.look !== undefined) {
+          const { look: _old, ...rest } = (fields.treatment ?? clip.treatment ?? {}) as Record<string, unknown>;
+          void _old;
+          fields.treatment = body.look ? { ...rest, look: body.look } : rest;
+        }
         if (body.annotations) fields.annotations = body.annotations;
         await save(clip.id, fields);
         break;

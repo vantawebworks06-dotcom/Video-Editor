@@ -18,6 +18,7 @@ import type { SceneSelection } from "./generate";
 import { buildMusicPlan } from "./music";
 import { NARRATION_ASSET_PREFIX } from "./originalFootage";
 import { applySources } from "./sourceTimeline";
+import { isNeutral, type Look, lookValues } from "@/lib/domain/look";
 import { DEFAULT_SOURCE_AUDIO } from "@/lib/domain/sourceAudio";
 
 export const TEXT_FONT = "Anton";
@@ -93,7 +94,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
       trimStart: s.asset.id.startsWith(NARRATION_ASSET_PREFIX) ? round(start) : s.trimStart,
       layout: s.layout,
       motion: { type: s.motion, intensity: s.motionIntensity },
-      treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite },
+      treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite, look: clipLook(s.look, input.settings.look) },
       annotations: s.annotations,
       transitionIn: s.transitionIn ?? (i > 0 && sorted[i - 1]!.sceneId !== s.sceneId ? (plan?.transition ?? "hard_cut") : "hard_cut"),
       role: s.role,
@@ -118,7 +119,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
         trimStart: s.trimStart,
         layout: "fullscreen",
         motion: { type: "none", intensity: 0 },
-        treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite },
+        treatment: { blackAndWhite: s.blackAndWhite, grain: s.blackAndWhite, look: clipLook(s.look, input.settings.look) },
         annotations: s.annotations,
         transitionIn: s.transitionIn ?? "hard_cut",
         role: "source",
@@ -218,6 +219,7 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
     },
     audio: {
       voice: input.voicePath,
+      voiceProcessing: input.settings.voice.preset === "off" ? undefined : input.settings.voice,
       music: input.musicPath,
       musicCues: input.resolveTrack
         ? stretchCues(buildMusicPlan({ plans: input.plans, duration, settings: input.settings, resolveTrack: input.resolveTrack, style: input.style, uploadedPath: input.settings.musicTrack === "uploaded" ? input.musicPath : null }), outT, outDuration)
@@ -233,6 +235,12 @@ export function buildTimeline(input: BuildTimelineInput): Timeline {
 }
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** The clip's own look, else the project look; neutral looks are dropped (render and cache unchanged). */
+function clipLook(own: Look | null | undefined, project: Look): Look | undefined {
+  const l = own ?? project;
+  return isNeutral(lookValues(l)) ? undefined : l;
+}
 
 /** Music planned in narration time, stretched over the pauses inserted for source footage. */
 function stretchCues(cues: MusicCue[], outT: (t: number, side?: "before" | "after") => number, outDuration: number): MusicCue[] {
