@@ -24,6 +24,7 @@ import { SourceRights } from "@/components/workstation/SourceRights";
 import { useMedia } from "@/components/workstation/useMedia";
 import { AssistantPanel } from "@/components/workstation/AssistantPanel";
 import { ExportPanel } from "@/components/workstation/ExportPanel";
+import { NarratorWorkspace } from "@/components/workstation/NarratorPanel";
 import type { AssistantAction } from "@/lib/assistant/actions";
 import type { SceneMediaStatus } from "@/components/workstation/SceneBoard";
 import { type ProviderInfoView, ResearchPanel, type ResearchRequestView } from "@/components/workstation/ResearchPanel";
@@ -35,6 +36,7 @@ const SECTIONS = [
   { id: "research", label: "Research" },
   { id: "media", label: "Media" },
   { id: "timeline", label: "Timeline" },
+  { id: "narrator", label: "Narrator" },
 ] as const;
 type Section = (typeof SECTIONS)[number]["id"];
 
@@ -64,7 +66,7 @@ function useSection(projectId: string): [Section, (s: Section) => void] {
   return [section, change];
 }
 
-const TASK_LABEL: Record<string, string> = { import_media: "Importing media", capture: "Capturing source", process_audio: "Processing narration" };
+const TASK_LABEL: Record<string, string> = { import_media: "Importing media", capture: "Capturing source", process_audio: "Processing narration", voice_profile: "Analysing your voice", narrate: "Generating narration" };
 const ACTIVE = ["QUEUED", "RUNNING", "DOWNLOADING", "PREPARING", "RENDERING", "FINALIZING"];
 const SIGNED_URL_REUSE_MS = 45 * 60_000; // the status route signs URLs for 1 h
 
@@ -674,88 +676,94 @@ export function Editor({ projectId }: { projectId: string }) {
         </div>
       ) : null}
 
-      <div className={cx("grid min-h-0 flex-1", section === "research" ? "grid-cols-[320px_1fr_480px]" : "grid-cols-[320px_1fr_360px]")}>
-        {/* LEFT: project / transcript / scenes */}
-        <aside className="flex min-h-0 flex-col border-r border-line bg-panel">
-          {section === "project" ? (
-            <div className="min-h-0 flex-1 overflow-auto">
-              <SetupPanel status={status} onChanged={() => void refresh()} onAnalyzeReference={() => void enqueue({ type: "analyze_reference", apply: true })} />
-            </div>
-          ) : section === "timeline" ? (
-            <div className="min-h-0 flex-1 overflow-auto">{sceneList()}</div>
-          ) : (
-            <ScriptPanel state={analysis} playhead={playhead} selected={selectedSentence} status={media.bySentence} onSelect={selectSentence} />
-          )}
-        </aside>
+      {section === "narrator" ? (
+        <NarratorWorkspace projectId={projectId} onUsedAsNarration={() => void refresh()} />
+      ) : (
+        <>
+          <div className={cx("grid min-h-0 flex-1", section === "research" ? "grid-cols-[320px_1fr_480px]" : "grid-cols-[320px_1fr_360px]")}>
+            {/* LEFT: project / transcript / scenes */}
+            <aside className="flex min-h-0 flex-col border-r border-line bg-panel">
+              {section === "project" ? (
+                <div className="min-h-0 flex-1 overflow-auto">
+                  <SetupPanel status={status} onChanged={() => void refresh()} onAnalyzeReference={() => void enqueue({ type: "analyze_reference", apply: true })} />
+                </div>
+              ) : section === "timeline" ? (
+                <div className="min-h-0 flex-1 overflow-auto">{sceneList()}</div>
+              ) : (
+                <ScriptPanel state={analysis} playhead={playhead} selected={selectedSentence} status={media.bySentence} onSelect={selectSentence} />
+              )}
+            </aside>
 
-        {/* CENTER: preview / section workspace */}
-        <section className="flex min-h-0 flex-col">
-          {section === "script" && analysis.analysis ? (
-            <div className="min-h-0 flex-1 bg-background">
-              <SceneBoard analysis={analysis.analysis} clips={edit?.clips ?? []} mediaStatus={sceneMedia} selectedSentence={selectedSentence} onSelectSentence={selectSentence} />
-            </div>
-          ) : section === "media" ? (
-            <div className="min-h-0 flex-1 bg-background">
-              <MediaLibrary projectId={projectId} media={media} analysis={analysis.analysis} selected={selectedItem} onSelect={(it) => setSelectedItem(it.id)} uploadSentence={selectedSentence} />
-            </div>
-          ) : (
-            preview()
-          )}
-        </section>
+            {/* CENTER: preview / section workspace */}
+            <section className="flex min-h-0 flex-col">
+              {section === "script" && analysis.analysis ? (
+                <div className="min-h-0 flex-1 bg-background">
+                  <SceneBoard analysis={analysis.analysis} clips={edit?.clips ?? []} mediaStatus={sceneMedia} selectedSentence={selectedSentence} onSelectSentence={selectSentence} />
+                </div>
+              ) : section === "media" ? (
+                <div className="min-h-0 flex-1 bg-background">
+                  <MediaLibrary projectId={projectId} media={media} analysis={analysis.analysis} selected={selectedItem} onSelect={(it) => setSelectedItem(it.id)} uploadSentence={selectedSentence} />
+                </div>
+              ) : (
+                preview()
+              )}
+            </section>
 
-        {/* RIGHT: section tools */}
-        <aside className="min-h-0 overflow-auto border-l border-line bg-panel">
-          {section === "script" && analysis.analysis ? (
-            <SentenceDetail
-              analysis={analysis.analysis}
-              s={sentence}
-              onResearch={(x, g) => {
-                setSelectedSentence(x.idx);
-                setResearchRequest({ sentence: x.idx, query: g?.query ?? null, category: g?.category ?? null, nonce: Date.now() });
-                setSection("research");
-              }}
-            />
-          ) : section === "research" ? (
-            <ResearchPanel projectId={projectId} sentence={sentence} media={media} request={researchRequest} providers={providers} />
-          ) : section === "media" ? (
-            <SourceRights projectId={projectId} item={item} media={media} analysis={analysis.analysis} />
-          ) : (
-            <Inspector
-              playhead={playhead}
-              projectId={projectId}
-              clip={clip}
-              plan={plan}
-              settings={p.settings}
-              hasMusicUpload={p.hasMusic}
-              onChanged={() => void refresh()}
-              onReplace={(c) => setReplacing({ clip: c, tab: "ai" })}
-              onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
-            />
-          )}
-        </aside>
-      </div>
+            {/* RIGHT: section tools */}
+            <aside className="min-h-0 overflow-auto border-l border-line bg-panel">
+              {section === "script" && analysis.analysis ? (
+                <SentenceDetail
+                  analysis={analysis.analysis}
+                  s={sentence}
+                  onResearch={(x, g) => {
+                    setSelectedSentence(x.idx);
+                    setResearchRequest({ sentence: x.idx, query: g?.query ?? null, category: g?.category ?? null, nonce: Date.now() });
+                    setSection("research");
+                  }}
+                />
+              ) : section === "research" ? (
+                <ResearchPanel projectId={projectId} sentence={sentence} media={media} request={researchRequest} providers={providers} />
+              ) : section === "media" ? (
+                <SourceRights projectId={projectId} item={item} media={media} analysis={analysis.analysis} />
+              ) : (
+                <Inspector
+                  playhead={playhead}
+                  projectId={projectId}
+                  clip={clip}
+                  plan={plan}
+                  settings={p.settings}
+                  hasMusicUpload={p.hasMusic}
+                  onChanged={() => void refresh()}
+                  onReplace={(c) => setReplacing({ clip: c, tab: "ai" })}
+                  onRegenerateScene={(id) => void enqueue({ type: "regenerate_scenes", sceneIds: [id] })}
+                />
+              )}
+            </aside>
+          </div>
 
-      {/* BOTTOM: timeline */}
-      <div className="h-[330px] shrink-0 border-t border-line bg-panel">
-        {edit && hasEdit ? (
-          <Timeline
-            data={edit}
-            peaks={peaks}
-            playhead={playhead}
-            musicLabel={music}
-            selectedClip={selectedClip}
-            selectedScene={selectedScene}
-            onSelectClip={selectClip}
-            onSelectScene={selectScene}
-            onSeek={seek}
-            onDropMedia={(id, t, asSource) => void placeMedia(id, t, asSource)}
-            history={history}
-            onHistory={(a) => void stepHistory(a)}
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-sm text-muted">The timeline appears after generation.</div>
-        )}
-      </div>
+          {/* BOTTOM: timeline */}
+          <div className="h-[330px] shrink-0 border-t border-line bg-panel">
+            {edit && hasEdit ? (
+              <Timeline
+                data={edit}
+                peaks={peaks}
+                playhead={playhead}
+                musicLabel={music}
+                selectedClip={selectedClip}
+                selectedScene={selectedScene}
+                onSelectClip={selectClip}
+                onSelectScene={selectScene}
+                onSeek={seek}
+                onDropMedia={(id, t, asSource) => void placeMedia(id, t, asSource)}
+                history={history}
+                onHistory={(a) => void stepHistory(a)}
+              />
+            ) : (
+              <div className="flex h-full items-center justify-center text-sm text-muted">The timeline appears after generation.</div>
+            )}
+          </div>
+        </>
+      )}
 
       {exportOpen && (
         <ExportPanel projectId={projectId} settings={p.settings} edit={edit} analysis={analysis.analysis} renderJob={rj} onClose={() => setExportOpen(false)} onStarted={() => void loadStatus()} />

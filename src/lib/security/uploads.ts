@@ -3,7 +3,7 @@
  * object name is generated server-side, the extension/MIME must be on an allow-list, and the
  * first bytes are sniffed. Duration and decodability are verified with ffprobe by the worker.
  */
-export type UploadKind = "narration" | "reference" | "music" | "script" | "image" | "media";
+export type UploadKind = "narration" | "reference" | "music" | "script" | "image" | "media" | "voice";
 
 interface KindRule {
   folder: "audio" | "assets";
@@ -36,6 +36,8 @@ export const UPLOAD_RULES: Record<UploadKind, KindRule> = {
   image: { folder: "assets", maxBytes: 20 * MB, maxSeconds: null, exts: { jpg: ["image/jpeg"], jpeg: ["image/jpeg"], png: ["image/png"], webp: ["image/webp"] } },
   /** Project media library: the user's own photos, footage, screenshots, audio and music. */
   media: { folder: "assets", maxBytes: 50 * MB, maxSeconds: 3 * 60 * 60, exts: { jpg: ["image/jpeg"], jpeg: ["image/jpeg"], png: ["image/png"], webp: ["image/webp"], gif: ["image/gif"], ...VIDEO, ...AUDIO } },
+  /** Voice samples for the narrator (uploaded files, or recordings made in the browser as WebM/Opus). */
+  voice: { folder: "audio", maxBytes: 50 * MB, maxSeconds: 30 * 60, exts: { ...AUDIO, webm: ["audio/webm", "video/webm"] } },
 };
 
 export function validateUploadRequest(kind: UploadKind, filename: string, mime: string, size: number): { ext: string } {

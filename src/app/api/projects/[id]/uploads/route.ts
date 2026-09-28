@@ -2,7 +2,8 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { HttpError, parseBody, requireProject, requireUser, route } from "@/lib/api/server";
 import { sniffMatches, storagePathFor, UPLOAD_RULES, type UploadKind, validateUploadRequest } from "@/lib/security/uploads";
-import { BUCKET } from "@/lib/supabase/admin";
+import { BUCKET, createAdminClient, hasServiceRole } from "@/lib/supabase/admin";
+import { sampleFolder } from "@/lib/narrator/samples";
 import { createItem } from "@/lib/data/media";
 import { MediaCategory } from "@/lib/domain/media";
 
@@ -24,6 +25,8 @@ const MediaMeta = z.object({
   rightsConfirmed: z.boolean().optional(),
   /** The research item this file is an authorised copy of (e.g. a YouTube video the user has rights to). */
   derivedFrom: z.uuid().nullable().optional(),
+  /** Voice uploads: the voice profile the sample belongs to. */
+  profileId: z.uuid().optional(),
 });
 const CompleteBody = z.object({ step: z.literal("complete"), kind: z.enum(KINDS), path: z.string().min(10).max(400), meta: MediaMeta.optional() });
 
@@ -121,6 +124,29 @@ export const POST = route(async (req: NextRequest, ctx: RouteContext<"/api/proje
     // The worker measures the file (dimensions, duration) and makes a thumbnail for video.
     await auth.supabase.from("pipeline_jobs").insert({ project_id: project.id, user_id: auth.userId, kind: "import_media", payload: { itemId: item.id } });
     return NextResponse.json({ ok: true, itemId: item.id });
+  }
+
+  if (body.kind === "voice") {
+    const profileId = body.meta?.profileId;
+    if (!profileId) throw new HttpError(400, "Choose a voice profile for this sample.");
+    // RLS scopes the profile to its owner.
+    const { data: profile } = await auth.supabase.from("voice_profiles").select("id, samples").eq("id", profileId).maybeSingle();
+    if (!profile) {
+      await auth.supabase.storage.from(BUCKET).remove([body.path]);
+      throw new HttpError(404, "Voice profile not found");
+    }
+    // Into the profile's own folder (kept when the project is deleted; see lib/narrator/samples).
+    let path = body.path;
+    if (hasServiceRole()) {
+      const dest = `${sampleFolder(project.id, profile.id)}/${body.path.split("/").pop()}`;
+      const { error: mvErr } = await createAdminClient().storage.from(BUCKET).move(body.path, dest);
+      if (!mvErr) path = dest;
+    }
+    const name = (body.meta?.title || body.meta?.filename || "Recording").replace(/\p{Cc}/gu, "").slice(0, 120);
+    const samples = [...((profile.samples as unknown[]) ?? []), { path, name, duration: null, addedAt: new Date().toISOString() }];
+    const { error } = await auth.supabase.from("voice_profiles").update({ samples, updated_at: new Date().toISOString() }).eq("id", profile.id);
+    if (error) throw error;
+    return NextResponse.json({ ok: true, path });
   }
 
   if (body.kind === "script") {

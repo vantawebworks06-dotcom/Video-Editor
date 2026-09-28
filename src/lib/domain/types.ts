@@ -196,7 +196,7 @@ export const Transcript = z.object({
   text: z.string(),
   words: z.array(Word),
   duration: z.number(),
-  source: z.enum(["whisper", "script_alignment", "demo"]),
+  source: z.enum(["whisper", "script_alignment", "demo", "narrator"]),
 });
 export type Transcript = z.infer<typeof Transcript>;
 
@@ -688,7 +688,7 @@ export const ACTIVE_RENDER_STATUSES = ["QUEUED", "DOWNLOADING", "PREPARING", "RE
 /** Pipeline job kinds that build or re-plan the edit (one at a time per project). */
 export const GENERATION_KINDS = ["generate", "regenerate_scenes", "analyze_reference"] as const;
 /** Short background tasks (media import, source capture, narration processing) — never block generation. */
-export const TASK_KINDS = ["import_media", "capture", "process_audio"] as const;
+export const TASK_KINDS = ["import_media", "capture", "process_audio", "voice_profile", "narrate"] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 /** A cancelled job is stored as FAILED with exactly this error (no schema change needed). */

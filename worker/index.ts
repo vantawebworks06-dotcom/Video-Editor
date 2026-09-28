@@ -30,6 +30,7 @@ import { resolveCredentials } from "@/lib/settings/apiKeys";
 import { BUCKET, createAdminClient } from "@/lib/supabase/admin";
 import { transcribeWithWhisper } from "@/lib/transcription/whisper";
 import { captureTask, importMedia, processAudioTask, type TaskDeps } from "./tasks";
+import { narrateTask, voiceProfileTask } from "./narrator";
 import { buildManifest } from "@/lib/export/deliverables";
 
 const WORKER_ID = `${os.hostname()}-${process.pid}`;
@@ -168,7 +169,7 @@ interface JobRow {
   id: string;
   project_id: string;
   user_id: string;
-  kind?: "generate" | "regenerate_scenes" | "analyze_reference" | "import_media" | "capture" | "process_audio";
+  kind?: "generate" | "regenerate_scenes" | "analyze_reference" | "import_media" | "capture" | "process_audio" | "voice_profile" | "narrate";
   payload?: Record<string, unknown>;
   format?: OutputFormat;
 }
@@ -198,6 +199,10 @@ async function runPipelineJob(job: JobRow, signal: AbortSignal) {
   if (job.kind === "import_media") return importMedia(job, deps);
   if (job.kind === "capture") return captureTask(job, deps);
   if (job.kind === "process_audio") return processAudioTask(job, { ...deps, narration: async (id) => (await narrationAudio(await loadProject(id))).path });
+  if (job.kind === "voice_profile") return voiceProfileTask(job, deps);
+  if (job.kind === "narrate") return narrateTask(job, deps);
+  // Anything else must be a generation job; never treat an unknown kind (from a newer app) as one.
+  if (job.kind && !["generate", "regenerate_scenes", "analyze_reference"].includes(job.kind)) throw new Error(`This worker does not know "${job.kind}" jobs — update and restart it.`);
 
   const project = await loadProject(job.project_id);
   const settings = parseSettings(project.settings);
@@ -480,7 +485,8 @@ async function recoverStaleJobs() {
 async function cleanup() {
   const cutoff = Date.now() - TEMP_RETENTION_HOURS * 3600_000;
   // Local caches.
-  for (const dir of ["render", "renders", "storage", "reference"]) {
+  // (narrator/: sentence audio and outputs only — the model and voice calibrations are kept.)
+  for (const dir of ["render", "renders", "storage", "reference", "narrator/sentences", "narrator/out"]) {
     const full = path.join(ROOT, dir);
     for (const name of await readdir(full).catch(() => [] as string[])) {
       const p = path.join(full, name);

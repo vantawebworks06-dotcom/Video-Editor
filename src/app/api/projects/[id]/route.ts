@@ -49,7 +49,8 @@ export const DELETE = route(async (_req: NextRequest, ctx: RouteContext<"/api/pr
   const auth = await requireUser();
   const project = await requireProject(auth, (await ctx.params).id);
   // Remove this project's storage objects (RLS allows owners to delete inside their project folder).
-  for (const folder of ["audio", "assets", "thumbnails", "renders", "temp"]) {
+  // (Voice-profile samples under audio/voice-samples/ are kept: profiles outlive projects.)
+  for (const folder of ["audio", "audio/narrator", "assets", "thumbnails", "renders", "temp"]) {
     const { data } = await auth.supabase.storage.from(BUCKET).list(`${project.id}/${folder}`, { limit: 1000 });
     const paths = (data ?? []).map((f) => `${project.id}/${folder}/${f.name}`);
     if (paths.length) await auth.supabase.storage.from(BUCKET).remove(paths);

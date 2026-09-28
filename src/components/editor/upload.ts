@@ -1,7 +1,7 @@
 import { api } from "@/components/ui";
 import { getSupabaseEnv } from "@/lib/supabase/env";
 
-export type UploadKind = "narration" | "reference" | "music" | "script" | "media";
+export type UploadKind = "narration" | "reference" | "music" | "script" | "media" | "voice";
 
 const ATTEMPTS = 3;
 
